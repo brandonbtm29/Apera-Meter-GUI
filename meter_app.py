@@ -20,11 +20,6 @@ import openpyxl
 from openpyxl.styles import Font, Alignment
 import ctypes
 
-try:
-    myappid = 'Apera.DualMeter.GUI.1.0' 
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-except Exception:
-    pass
 
 scan_lock = threading.Lock()
 ctk.set_appearance_mode("Dark")  
