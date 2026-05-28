@@ -121,6 +121,8 @@ class MeterController(ctk.CTkFrame):
             e.pack(side="right")
             return e
             
+        self.ent_time_win = make_entry(self.frame_left, "Time Window (min):")
+        self.ent_time_win.insert(0, "10.0")
         self.ent_cond_min = make_entry(self.frame_left, "Cond Min:")
         self.ent_cond_max = make_entry(self.frame_left, "Cond Max:")
         self.ent_temp_min = make_entry(self.frame_left, "Temp Min (°C):")
@@ -417,6 +419,15 @@ class MeterController(ctk.CTkFrame):
         if self.plot_dates:
             self.ax.plot(self.plot_dates, self.plot_conds, marker='o', linestyle='-', color='#3498db', label="Cond")
             self.ax.tick_params(axis='y', labelcolor='#3498db')
+            
+            if not self.auto_time_var.get():
+                try:
+                    import datetime
+                    win_min = float(self.ent_time_win.get())
+                    xmax = self.plot_dates[-1]
+                    xmin = xmax - datetime.timedelta(minutes=win_min)
+                    self.ax.set_xlim(xmin, xmax)
+                except Exception: pass
             
             if not self.auto_cond_var.get():
                 try:
