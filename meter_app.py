@@ -311,8 +311,8 @@ class MeterController(ctk.CTkFrame):
     def toggle_view(self, view_name):
         if not hasattr(self, 'inner_paned'):
             self.inner_paned = tk.PanedWindow(self.views_container, orient=tk.VERTICAL, bg="#2b2b2b", sashwidth=6)
-            self.inner_paned.pack(fill="both", expand=True)
             
+        self.inner_paned.pack_forget()
         try: self.inner_paned.forget(self.plot_frame)
         except Exception: pass
         try: self.inner_paned.forget(self.table_frame)
@@ -322,12 +322,13 @@ class MeterController(ctk.CTkFrame):
         self.table_frame.pack_forget()
             
         if view_name == "Data Table":
-            self.inner_paned.add(self.table_frame, stretch="always")
+            self.table_frame.pack(fill="both", expand=True)
         elif view_name == "Live Plot":
-            self.inner_paned.add(self.plot_frame, stretch="always")
+            self.plot_frame.pack(fill="both", expand=True)
         elif view_name == "Combined View":
-            self.inner_paned.add(self.plot_frame, minsize=200, stretch="always")
-            self.inner_paned.add(self.table_frame, minsize=200, stretch="always")
+            self.inner_paned.pack(fill="both", expand=True)
+            self.inner_paned.add(self.plot_frame, minsize=100, stretch="always")
+            self.inner_paned.add(self.table_frame, minsize=100, stretch="always")
 
     def open_settings(self):
         top = ctk.CTkToplevel(self)
