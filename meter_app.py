@@ -134,15 +134,11 @@ class MeterController(ctk.CTkFrame):
         self.btn_settings.pack(fill="x", padx=10, pady=(5, 20))
         
         # --- MIDDLE PANEL: Views ---
-        self.view_var = ctk.StringVar(value="Combined View")
-        self.view_seg = ctk.CTkSegmentedButton(self.frame_mid, values=["Data Table", "Live Plot", "Combined View"], variable=self.view_var, command=self.toggle_view)
-        self.view_seg.pack(pady=10)
+        self.inner_paned = tk.PanedWindow(self.frame_mid, orient=tk.VERTICAL, bg="#2b2b2b", sashwidth=6, sashrelief=tk.RAISED)
+        self.inner_paned.pack(fill="both", expand=True, padx=5, pady=5)
         
-        self.views_container = ctk.CTkFrame(self.frame_mid, fg_color="transparent")
-        self.views_container.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        self.plot_frame = ctk.CTkFrame(self.views_container)
-        self.table_frame = ctk.CTkFrame(self.views_container)
+        self.plot_frame = ctk.CTkFrame(self.inner_paned, fg_color="transparent")
+        self.table_frame = ctk.CTkFrame(self.inner_paned, fg_color="transparent")
         
         plt.style.use('dark_background')
         self.fig, self.ax = plt.subplots(figsize=(5, 4))
@@ -180,7 +176,8 @@ class MeterController(ctk.CTkFrame):
         self.tree.configure(yscroll=self.scrollbar.set)
         self.scrollbar.grid(row=0, column=1, sticky="ns")
         
-        self.toggle_view(self.view_var.get())
+        self.inner_paned.add(self.plot_frame, minsize=100, stretch="always")
+        self.inner_paned.add(self.table_frame, minsize=100, stretch="always")
         
         # --- RIGHT PANEL: Connection & Export ---
         ctk.CTkLabel(self.frame_right, text="Connection", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=10, pady=(10, 5))
@@ -308,27 +305,7 @@ class MeterController(ctk.CTkFrame):
             except Exception as e:
                 messagebox.showerror("Error", str(e))
 
-    def toggle_view(self, view_name):
-        if not hasattr(self, 'inner_paned'):
-            self.inner_paned = tk.PanedWindow(self.views_container, orient=tk.VERTICAL, bg="#2b2b2b", sashwidth=6)
-            
-        self.inner_paned.pack_forget()
-        try: self.inner_paned.forget(self.plot_frame)
-        except Exception: pass
-        try: self.inner_paned.forget(self.table_frame)
-        except Exception: pass
-        
-        self.plot_frame.pack_forget()
-        self.table_frame.pack_forget()
-            
-        if view_name == "Data Table":
-            self.table_frame.pack(fill="both", expand=True)
-        elif view_name == "Live Plot":
-            self.plot_frame.pack(fill="both", expand=True)
-        elif view_name == "Combined View":
-            self.inner_paned.pack(fill="both", expand=True)
-            self.inner_paned.add(self.plot_frame, minsize=100, stretch="always")
-            self.inner_paned.add(self.table_frame, minsize=100, stretch="always")
+
 
     def open_settings(self):
         top = ctk.CTkToplevel(self)
