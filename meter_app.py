@@ -134,6 +134,10 @@ class MeterController(ctk.CTkFrame):
         self.btn_apply_lims = ctk.CTkButton(self.frame_left, text="Apply Limits", command=self.apply_limits)
         self.btn_apply_lims.pack(fill="x", padx=10, pady=10)
         
+        ctk.CTkFrame(self.frame_left, height=2, fg_color="gray").pack(fill="x", padx=10, pady=10)
+        self.btn_settings = ctk.CTkButton(self.frame_left, text="Advanced Settings", command=self.open_settings, fg_color="#7f8c8d", hover_color="#95a5a6")
+        self.btn_settings.pack(fill="x", padx=10, pady=(5, 20))
+        
         # --- MIDDLE PANEL: Views ---
         self.view_var = ctk.StringVar(value="Combined View")
         self.view_seg = ctk.CTkSegmentedButton(self.frame_mid, values=["Data Table", "Live Plot", "Combined View"], variable=self.view_var, command=self.toggle_view)
@@ -310,21 +314,52 @@ class MeterController(ctk.CTkFrame):
                 messagebox.showerror("Error", str(e))
 
     def toggle_view(self, view_name):
+        if not hasattr(self, 'inner_paned'):
+            self.inner_paned = tk.PanedWindow(self.views_container, orient=tk.VERTICAL, bg="#2b2b2b", sashwidth=6)
+            self.inner_paned.pack(fill="both", expand=True)
+            
+        try: self.inner_paned.forget(self.plot_frame)
+        except Exception: pass
+        try: self.inner_paned.forget(self.table_frame)
+        except Exception: pass
+        
         self.plot_frame.pack_forget()
         self.table_frame.pack_forget()
-        if hasattr(self, 'inner_paned'):
-            self.inner_paned.pack_forget()
             
         if view_name == "Data Table":
-            self.table_frame.pack(fill="both", expand=True)
+            self.inner_paned.add(self.table_frame, stretch="always")
         elif view_name == "Live Plot":
-            self.plot_frame.pack(fill="both", expand=True)
+            self.inner_paned.add(self.plot_frame, stretch="always")
         elif view_name == "Combined View":
-            if not hasattr(self, 'inner_paned'):
-                self.inner_paned = tk.PanedWindow(self.views_container, orient=tk.VERTICAL, bg="#2b2b2b", sashwidth=6)
-            self.inner_paned.pack(fill="both", expand=True)
             self.inner_paned.add(self.plot_frame, minsize=200, stretch="always")
             self.inner_paned.add(self.table_frame, minsize=200, stretch="always")
+
+    def open_settings(self):
+        top = ctk.CTkToplevel(self)
+        top.title(f"Settings - Meter {self.meter_id}")
+        top.geometry("400x300")
+        top.attributes("-topmost", True)
+        
+        ctk.CTkLabel(top, text="Default Save Directory:", font=ctk.CTkFont(weight="bold")).pack(pady=(20,5))
+        lbl_dir = ctk.CTkLabel(top, text=self.config.get(f"default_save_location_{self.meter_id}", "Not Set"), text_color="gray")
+        lbl_dir.pack(pady=5)
+        
+        def choose_dir():
+            d = filedialog.askdirectory()
+            if d:
+                lbl_dir.configure(text=d)
+                self.config[f"default_save_location_{self.meter_id}"] = d
+                self.save_config()
+                
+        ctk.CTkButton(top, text="Browse...", command=choose_dir).pack(pady=5)
+        
+        keep_alive_var = ctk.BooleanVar(value=self.config.get(f"keep_alive_{self.meter_id}", True))
+        def toggle_ka():
+            self.config[f"keep_alive_{self.meter_id}"] = keep_alive_var.get()
+            self.save_config()
+            
+        chk = ctk.CTkCheckBox(top, text="Enable Keep-Alive (Ping every 2s)", variable=keep_alive_var, command=toggle_ka)
+        chk.pack(pady=30)
 
     def _sort_treeview(self, col, reverse):
         items = [(self.tree.set(k, col), k) for k in self.tree.get_children("")]
