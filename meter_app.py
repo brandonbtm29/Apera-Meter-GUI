@@ -646,17 +646,6 @@ class MeterController(ctk.CTkFrame):
                 
                 if self.is_recording:
                     self.after(0, self.log_point, dt_obj, row_data)
-                else:
-                    # Live preview updates only the plot list and plot
-                    self.plot_dates.append(dt_obj)
-                    self.plot_conds.append(float(cond_us) if cond_us else 0.0)
-                    self.plot_temps.append(float(temp_c))
-                    # keep rolling window of 100 points for live preview if not recording to save memory
-                    if len(self.plot_dates) > 100:
-                        self.plot_dates.pop(0)
-                        self.plot_conds.pop(0)
-                        self.plot_temps.pop(0)
-                    self.after(0, self.schedule_plot)
                     
             except Exception: pass
                 
