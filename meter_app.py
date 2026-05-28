@@ -759,5 +759,11 @@ class MeterApp(ctk.CTk):
         self.destroy()
 
 if __name__ == "__main__":
+    import ctypes
+    try:
+        myappid = 'candr.conductivity_meter.1.0'
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+    except Exception: pass
+    
     app = MeterApp()
     app.mainloop()
