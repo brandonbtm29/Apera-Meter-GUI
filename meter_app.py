@@ -1,4 +1,4 @@
-import customtkinter as ctk
+import sys
 import serial
 import serial.tools.list_ports
 import threading
@@ -6,37 +6,45 @@ import time
 import datetime
 import os
 import struct
-import tkinter as tk
-from tkinter import ttk, filedialog
 import csv
-import matplotlib
-matplotlib.use('TkAgg')
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import tkinter.messagebox as messagebox
 import json
 import openpyxl
 from openpyxl.styles import Font, Alignment
-import ctypes
 
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QTabWidget, QSplitter, QScrollArea, QLabel, QPushButton,
+    QCheckBox, QLineEdit, QComboBox, QTextEdit, QTableWidget,
+    QTableWidgetItem, QHeaderView, QMessageBox, QFileDialog,
+    QFormLayout, QFrame, QDialog
+)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtGui import QFont, QColor
+
+import qdarktheme
+
+import matplotlib
+matplotlib.use('QtAgg')
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 
 scan_lock = threading.Lock()
-ctk.set_appearance_mode("Dark")  
-ctk.set_default_color_theme("blue")  
 
-class MeterController(ctk.CTkFrame):
-    def __init__(self, parent, meter_id=1, app_controller=None, **kwargs):
-        super().__init__(parent, **kwargs)
+class WorkerSignals(QObject):
+    update_tree = pyqtSignal(object, tuple)
+    update_status = pyqtSignal(str, str)
+    update_device_info = pyqtSignal(str, str)
+
+class MeterController(QWidget):
+    def __init__(self, meter_id=1, parent_app=None):
+        super().__init__()
         self.meter_id = meter_id
-        self.app_controller = app_controller
+        self.app_controller = parent_app
 
         self.ser = None
         self.is_connected = False
-        self.listen_thread = None
         self.unsaved_changes = False
-        
-        # New State for recording and plotting
         self.is_recording = False
         self.received_timestamps = set()
         
@@ -45,8 +53,14 @@ class MeterController(ctk.CTkFrame):
         self.plot_temps = []
         
         self.last_auto_dump_time = time.time()
+        self.last_data_time = 0
         
-        # Config setup
+        # Signals for thread-safe UI updates
+        self.signals = WorkerSignals()
+        self.signals.update_tree.connect(self.log_point_ui)
+        self.signals.update_status.connect(self.set_status)
+        self.signals.update_device_info.connect(self.set_device_info)
+        
         self.config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
         self.config = {
             f"default_com_port_{meter_id}": "COM4" if meter_id == 1 else "Auto-Detect Apera Meter",
@@ -61,179 +75,214 @@ class MeterController(ctk.CTkFrame):
         if not docs or not os.path.isdir(docs):
             docs = os.path.join(os.environ.get('USERPROFILE', os.path.expanduser('~')), 'Documents')
         self.emergency_backup_path = os.path.join(docs, f"Apera_Meter{meter_id}_Backup.csv")
-        
         self.columns = ("DateTime", "Mode", "Cond (uS/cm)", "Cond (mS/cm)", "Temp (°C)", "Raw Cond_ADC")
         
-        # --- Layout Configuration ---
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(0, weight=1)
+        self.init_ui()
+        self.init_backup_file()
+        
+        self.refresh_ports()
+        target_com = self.config.get(f"default_com_port_{self.meter_id}", "Auto-Detect Apera Meter")
+        idx = self.port_combo.findText(target_com)
+        if idx >= 0:
+            self.port_combo.setCurrentIndex(idx)
+        
+        # Connect on startup if matching
+        QTimer.singleShot(500, self._auto_connect_check)
 
-        self.main_paned = tk.PanedWindow(self, orient=tk.HORIZONTAL, bg="#2b2b2b", sashwidth=6, sashrelief=tk.RAISED)
-        self.main_paned.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+    def _auto_connect_check(self):
+        if self.port_combo.currentText() == self.config.get(f"default_com_port_{self.meter_id}"):
+            self.connect_meter()
+
+    def init_ui(self):
+        main_layout = QVBoxLayout(self)
         
-        self.left_container = ctk.CTkFrame(self.main_paned, fg_color="transparent")
-        self.mid_container = ctk.CTkFrame(self.main_paned, fg_color="transparent")
-        self.right_container = ctk.CTkFrame(self.main_paned, fg_color="transparent")
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_layout.addWidget(self.main_splitter)
         
-        self.main_paned.add(self.left_container, minsize=220)
-        self.main_paned.add(self.mid_container, minsize=400, stretch="always")
-        self.main_paned.add(self.right_container, minsize=220)
+        # Left Panel (Settings)
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(10, 10, 10, 10)
         
-        self.frame_left = ctk.CTkScrollableFrame(self.left_container, width=280)
-        self.frame_left.pack(fill="both", expand=True)
-        self.frame_mid = ctk.CTkFrame(self.mid_container)
-        self.frame_mid.pack(fill="both", expand=True)
-        self.frame_right = ctk.CTkScrollableFrame(self.right_container, width=300)
-        self.frame_right.pack(fill="both", expand=True)
+        lbl_title = QLabel(f"Meter {self.meter_id}")
+        lbl_title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        left_layout.addWidget(lbl_title)
         
-        # --- LEFT PANEL: Settings & Recording ---
-        ctk.CTkLabel(self.frame_left, text=f"Meter {meter_id}", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=(10, 20))
+        lbl_rec = QLabel("Recording Settings")
+        lbl_rec.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        left_layout.addWidget(lbl_rec)
         
-        ctk.CTkLabel(self.frame_left, text="Recording Settings", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=10)
+        self.btn_record = QPushButton("Start Recording")
+        self.btn_record.setStyleSheet("background-color: #2ecc71; color: white;")
+        self.btn_record.clicked.connect(self.toggle_record)
+        left_layout.addWidget(self.btn_record)
         
-        self.btn_record = ctk.CTkButton(self.frame_left, text="Start Recording", fg_color="#2ecc71", hover_color="#27ae60", command=self.toggle_record)
-        self.btn_record.pack(fill="x", padx=10, pady=10)
+        self.auto_dump_chk = QCheckBox("Auto-Dump Memory (hrs):")
+        left_layout.addWidget(self.auto_dump_chk)
+        self.auto_dump_entry = QLineEdit(str(self.config.get(f"default_auto_dump_hrs_{self.meter_id}", 2.0)))
+        left_layout.addWidget(self.auto_dump_entry)
         
-        self.auto_dump_var = ctk.BooleanVar(value=False)
-        self.auto_dump_chk = ctk.CTkCheckBox(self.frame_left, text="Auto-Dump Memory (hrs):", variable=self.auto_dump_var)
-        self.auto_dump_chk.pack(anchor="w", padx=10, pady=(10, 2))
+        line1 = QFrame()
+        line1.setFrameShape(QFrame.Shape.HLine)
+        left_layout.addWidget(line1)
         
-        self.auto_dump_entry = ctk.CTkEntry(self.frame_left, width=100)
-        self.auto_dump_entry.insert(0, str(self.config.get(f"default_auto_dump_hrs_{meter_id}", 2.0)))
-        self.auto_dump_entry.pack(anchor="w", padx=10, pady=5)
+        lbl_axis = QLabel("Axis Limits")
+        lbl_axis.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        left_layout.addWidget(lbl_axis)
         
-        ctk.CTkFrame(self.frame_left, height=2, fg_color="gray").pack(fill="x", padx=10, pady=15)
+        self.auto_time_chk = QCheckBox("Auto Time")
+        self.auto_time_chk.setChecked(True)
+        self.auto_time_chk.stateChanged.connect(self.plot_data)
+        left_layout.addWidget(self.auto_time_chk)
         
-        ctk.CTkLabel(self.frame_left, text="Axis Limits", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=10)
-        self.auto_time_var = ctk.BooleanVar(value=True)
-        self.auto_cond_var = ctk.BooleanVar(value=True)
-        self.auto_temp_var = ctk.BooleanVar(value=True)
+        self.auto_cond_chk = QCheckBox("Auto Cond")
+        self.auto_cond_chk.setChecked(True)
+        self.auto_cond_chk.stateChanged.connect(self.plot_data)
+        left_layout.addWidget(self.auto_cond_chk)
         
-        ctk.CTkCheckBox(self.frame_left, text="Auto Time", variable=self.auto_time_var, command=self.plot_data).pack(anchor="w", padx=10, pady=2)
-        ctk.CTkCheckBox(self.frame_left, text="Auto Cond", variable=self.auto_cond_var, command=self.plot_data).pack(anchor="w", padx=10, pady=2)
-        ctk.CTkCheckBox(self.frame_left, text="Auto Temp", variable=self.auto_temp_var, command=self.plot_data).pack(anchor="w", padx=10, pady=(2, 10))
+        self.auto_temp_chk = QCheckBox("Auto Temp")
+        self.auto_temp_chk.setChecked(True)
+        self.auto_temp_chk.stateChanged.connect(self.plot_data)
+        left_layout.addWidget(self.auto_temp_chk)
         
-        def make_entry(parent, text):
-            f = ctk.CTkFrame(parent, fg_color="transparent")
-            f.pack(fill="x", padx=10, pady=2)
-            ctk.CTkLabel(f, text=text).pack(side="left")
-            e = ctk.CTkEntry(f, width=70)
-            e.pack(side="right")
-            return e
-            
-        self.ent_time_win = make_entry(self.frame_left, "Time Window (min):")
-        self.ent_time_win.insert(0, "10.0")
-        self.ent_cond_min = make_entry(self.frame_left, "Cond Min:")
-        self.ent_cond_max = make_entry(self.frame_left, "Cond Max:")
-        self.ent_temp_min = make_entry(self.frame_left, "Temp Min (°C):")
-        self.ent_temp_max = make_entry(self.frame_left, "Temp Max (°C):")
+        form_layout = QFormLayout()
+        self.ent_time_win = QLineEdit("10.0")
+        self.ent_cond_min = QLineEdit()
+        self.ent_cond_max = QLineEdit()
+        self.ent_temp_min = QLineEdit()
+        self.ent_temp_max = QLineEdit()
+        form_layout.addRow("Time Window (min):", self.ent_time_win)
+        form_layout.addRow("Cond Min:", self.ent_cond_min)
+        form_layout.addRow("Cond Max:", self.ent_cond_max)
+        form_layout.addRow("Temp Min (°C):", self.ent_temp_min)
+        form_layout.addRow("Temp Max (°C):", self.ent_temp_max)
+        left_layout.addLayout(form_layout)
         
-        self.btn_apply_lims = ctk.CTkButton(self.frame_left, text="Apply Limits", command=self.apply_limits)
-        self.btn_apply_lims.pack(fill="x", padx=10, pady=10)
+        self.btn_apply_lims = QPushButton("Apply Limits")
+        self.btn_apply_lims.clicked.connect(self.apply_limits)
+        left_layout.addWidget(self.btn_apply_lims)
         
-        ctk.CTkFrame(self.frame_left, height=2, fg_color="gray").pack(fill="x", padx=10, pady=10)
-        self.btn_settings = ctk.CTkButton(self.frame_left, text="Advanced Settings", command=self.open_settings, fg_color="#7f8c8d", hover_color="#95a5a6")
-        self.btn_settings.pack(fill="x", padx=10, pady=(5, 20))
+        line2 = QFrame()
+        line2.setFrameShape(QFrame.Shape.HLine)
+        left_layout.addWidget(line2)
         
-        # --- MIDDLE PANEL: Views ---
-        self.inner_paned = tk.PanedWindow(self.frame_mid, orient=tk.VERTICAL, bg="#2b2b2b", sashwidth=6, sashrelief=tk.RAISED)
-        self.inner_paned.pack(fill="both", expand=True, padx=5, pady=5)
+        self.btn_settings = QPushButton("Advanced Settings")
+        self.btn_settings.clicked.connect(self.open_settings)
+        left_layout.addWidget(self.btn_settings)
+        left_layout.addStretch()
         
-        self.plot_frame = ctk.CTkFrame(self.inner_paned, fg_color="transparent")
-        self.table_frame = ctk.CTkFrame(self.inner_paned, fg_color="transparent")
+        left_scroll = QScrollArea()
+        left_scroll.setWidget(left_widget)
+        left_scroll.setWidgetResizable(True)
         
-        plt.style.use('dark_background')
+        # Middle Panel (Plot & Table)
+        mid_splitter = QSplitter(Qt.Orientation.Vertical)
+        
         self.fig, self.ax = plt.subplots(figsize=(5, 4))
-        self.fig.patch.set_facecolor('#2b2b2b')
-        self.ax.set_facecolor('#2b2b2b')
-        self.ax.set_title(f"Live Conductivity (Meter {meter_id})")
+        self.ax.set_title(f"Live Conductivity (Meter {self.meter_id})")
         self.ax.set_xlabel("Time")
-        self.ax.set_ylabel("Conductivity (uS/cm)", color='#1f538d')
+        self.ax.set_ylabel("Conductivity (uS/cm)", color='#3498db')
         self.ax.grid(True, linestyle='--', alpha=0.3)
         self.ax2 = self.ax.twinx()
         self.ax2.set_ylabel("Temperature (°C)", color='#e74c3c')
         self.fig.tight_layout()
         
-        self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_frame)
-        self.canvas_widget = self.canvas.get_tk_widget()
-        self.canvas_widget.pack(fill="both", expand=True, padx=2, pady=2)
+        self.canvas = FigureCanvasQTAgg(self.fig)
+        mid_splitter.addWidget(self.canvas)
         
-        style = tk.ttk.Style()
-        style.theme_use("default")
-        style.configure("Treeview", background="#2b2b2b", foreground="white", fieldbackground="#2b2b2b", borderwidth=0, rowheight=25)
-        style.map('Treeview', background=[('selected', '#1f538d')])
-        style.configure("Treeview.Heading", background="#565b5e", foreground="white", relief="flat", font=("Arial", 10, "bold"))
-        style.map("Treeview.Heading", background=[('active', '#343638')])
+        self.table = QTableWidget()
+        self.table.setColumnCount(len(self.columns))
+        self.table.setHorizontalHeaderLabels(self.columns)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setSortingEnabled(True)
+        mid_splitter.addWidget(self.table)
         
-        self.table_frame.grid_columnconfigure(0, weight=1)
-        self.table_frame.grid_rowconfigure(0, weight=1)
+        # Right Panel (Connection & Controls)
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(10, 10, 10, 10)
         
-        self.tree = tk.ttk.Treeview(self.table_frame, columns=self.columns, show="headings", selectmode="extended")
-        col_widths = [140, 60, 90, 90, 80, 100]
-        for i, col in enumerate(self.columns):
-            self.tree.heading(col, text=col, command=lambda c=col: self._sort_treeview(c, False))
-            self.tree.column(col, width=col_widths[i], anchor="center")
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        self.scrollbar = tk.ttk.Scrollbar(self.table_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscroll=self.scrollbar.set)
-        self.scrollbar.grid(row=0, column=1, sticky="ns")
+        lbl_conn = QLabel("Connection")
+        lbl_conn.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        right_layout.addWidget(lbl_conn)
         
-        self.inner_paned.add(self.plot_frame, minsize=100, stretch="always")
-        self.inner_paned.add(self.table_frame, minsize=100, stretch="always")
+        self.port_combo = QComboBox()
+        right_layout.addWidget(self.port_combo)
         
-        # --- RIGHT PANEL: Connection & Export ---
-        ctk.CTkLabel(self.frame_right, text="Connection", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=10, pady=(10, 5))
-        self.port_combo = ctk.CTkComboBox(self.frame_right, values=self.get_ports())
-        self.port_combo.pack(fill="x", padx=10, pady=5)
-        self.btn_refresh = ctk.CTkButton(self.frame_right, text="Refresh Ports", command=self.refresh_ports)
-        self.btn_refresh.pack(fill="x", padx=10, pady=5)
-        self.btn_connect = ctk.CTkButton(self.frame_right, text="Connect", command=self.toggle_connection, font=ctk.CTkFont(weight="bold"))
-        self.btn_connect.pack(fill="x", padx=10, pady=(5, 10))
+        self.btn_refresh = QPushButton("Refresh Ports")
+        self.btn_refresh.clicked.connect(self.refresh_ports)
+        right_layout.addWidget(self.btn_refresh)
         
-        self.lbl_status = ctk.CTkLabel(self.frame_right, text="Status: Disconnected", text_color="gray", font=ctk.CTkFont(weight="bold"))
-        self.lbl_status.pack(pady=5)
+        self.btn_connect = QPushButton("Connect")
+        self.btn_connect.clicked.connect(self.toggle_connection)
+        right_layout.addWidget(self.btn_connect)
         
-        self.sn_label = ctk.CTkLabel(self.frame_right, text="SN: Unknown", font=ctk.CTkFont(size=11), text_color="gray")
-        self.sn_label.pack(anchor="w", padx=10)
-        self.model_label = ctk.CTkLabel(self.frame_right, text="Model: Unknown", font=ctk.CTkFont(size=11), text_color="gray")
-        self.model_label.pack(anchor="w", padx=10)
+        self.lbl_status = QLabel("Status: Disconnected")
+        self.lbl_status.setStyleSheet("color: gray;")
+        right_layout.addWidget(self.lbl_status)
         
-        ctk.CTkFrame(self.frame_right, height=2, fg_color="gray").pack(fill="x", padx=10, pady=10)
+        self.sn_label = QLabel("SN: Unknown")
+        self.model_label = QLabel("Model: Unknown")
+        right_layout.addWidget(self.sn_label)
+        right_layout.addWidget(self.model_label)
         
-        ctk.CTkLabel(self.frame_right, text="Experiment Notes", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=10)
-        self.txt_notes = ctk.CTkTextbox(self.frame_right, height=100)
-        self.txt_notes.pack(fill="x", padx=10, pady=5)
-        self.txt_notes.insert("0.0", self.config.get(f"meter_notes_{meter_id}", ""))
-        self.txt_notes.bind("<KeyRelease>", self.save_notes)
+        line3 = QFrame()
+        line3.setFrameShape(QFrame.Shape.HLine)
+        right_layout.addWidget(line3)
         
-        ctk.CTkFrame(self.frame_right, height=2, fg_color="gray").pack(fill="x", padx=10, pady=10)
+        lbl_notes = QLabel("Experiment Notes")
+        lbl_notes.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        right_layout.addWidget(lbl_notes)
+        self.txt_notes = QTextEdit()
+        self.txt_notes.setText(self.config.get(f"meter_notes_{self.meter_id}", ""))
+        self.txt_notes.textChanged.connect(self.save_notes)
+        right_layout.addWidget(self.txt_notes)
         
-        self.btn_sync = ctk.CTkButton(self.frame_right, text="Sync Meter Time", command=self.sync_time, state="disabled", fg_color="#f39c12", hover_color="#d68910")
-        self.btn_sync.pack(fill="x", padx=10, pady=5)
-        self.btn_download = ctk.CTkButton(self.frame_right, text="Download Raw Memory", command=self.download_memory, state="disabled")
-        self.btn_download.pack(fill="x", padx=10, pady=5)
+        line4 = QFrame()
+        line4.setFrameShape(QFrame.Shape.HLine)
+        right_layout.addWidget(line4)
         
-        ctk.CTkFrame(self.frame_right, height=2, fg_color="gray").pack(fill="x", padx=10, pady=10)
+        self.btn_sync = QPushButton("Sync Meter Time")
+        self.btn_sync.setEnabled(False)
+        self.btn_sync.clicked.connect(self.sync_time)
+        right_layout.addWidget(self.btn_sync)
         
-        self.btn_export = ctk.CTkButton(self.frame_right, text="Save Log to Excel", command=self.export_data, fg_color="#27ae60", hover_color="#219150", font=ctk.CTkFont(weight="bold"))
-        self.btn_export.pack(fill="x", padx=10, pady=5)
+        self.btn_download = QPushButton("Download Raw Memory")
+        self.btn_download.setEnabled(False)
+        self.btn_download.clicked.connect(self.download_memory)
+        right_layout.addWidget(self.btn_download)
         
-        self.btn_save_graph = ctk.CTkButton(self.frame_right, text="Save Graph PNG", command=self.save_graph, fg_color="#2980b9", hover_color="#1f618d")
-        self.btn_save_graph.pack(fill="x", padx=10, pady=5)
+        self.btn_export = QPushButton("Save Log to Excel")
+        self.btn_export.setStyleSheet("background-color: #27ae60; color: white;")
+        self.btn_export.clicked.connect(self.export_data)
+        right_layout.addWidget(self.btn_export)
         
-        self.btn_recover = ctk.CTkButton(self.frame_right, text="Recover Session", command=self.recover_session, fg_color="#8e44ad", hover_color="#732d91")
-        self.btn_recover.pack(fill="x", padx=10, pady=5)
+        self.btn_save_graph = QPushButton("Save Graph PNG")
+        self.btn_save_graph.clicked.connect(self.save_graph)
+        right_layout.addWidget(self.btn_save_graph)
         
-        self.btn_clear = ctk.CTkButton(self.frame_right, text="Clear Data", command=self.clear_log, fg_color="#c0392b", hover_color="#922b21")
-        self.btn_clear.pack(fill="x", padx=10, pady=(5, 20))
+        self.btn_recover = QPushButton("Recover Session")
+        self.btn_recover.clicked.connect(self.recover_session)
+        right_layout.addWidget(self.btn_recover)
         
-        # Init emergency file
-        self.init_backup_file()
+        self.btn_clear = QPushButton("Clear Data")
+        self.btn_clear.setStyleSheet("background-color: #c0392b; color: white;")
+        self.btn_clear.clicked.connect(self.clear_log)
+        right_layout.addWidget(self.btn_clear)
         
-        self.refresh_ports()
-        target_com = self.config.get(f"default_com_port_{self.meter_id}", "Auto-Detect Apera Meter")
-        if self.port_combo.get() == target_com:
-            self.after(500, self.connect)
+        right_layout.addStretch()
+        
+        right_scroll = QScrollArea()
+        right_scroll.setWidget(right_widget)
+        right_scroll.setWidgetResizable(True)
+        
+        # Add to main splitter
+        self.main_splitter.addWidget(left_scroll)
+        self.main_splitter.addWidget(mid_splitter)
+        self.main_splitter.addWidget(right_scroll)
+        self.main_splitter.setStretchFactor(0, 1)
+        self.main_splitter.setStretchFactor(1, 3)
+        self.main_splitter.setStretchFactor(2, 1)
 
     def init_backup_file(self):
         try:
@@ -241,27 +290,111 @@ class MeterController(ctk.CTkFrame):
                 with open(self.emergency_backup_path, "w", newline="", encoding="utf-8") as f:
                     writer = csv.writer(f)
                     writer.writerow(self.columns)
-        except Exception:
-            pass
+        except Exception: pass
 
-    def save_notes(self, event=None):
-        self.config[f"meter_notes_{self.meter_id}"] = self.txt_notes.get("0.0", "end").strip()
+    def load_config(self):
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, "r") as f:
+                    self.config.update(json.load(f))
+            except: pass
+
+    def save_config(self):
+        try:
+            with open(self.config_path, "w") as f:
+                json.dump(self.config, f, indent=4)
+        except: pass
+
+    def save_notes(self):
+        self.config[f"meter_notes_{self.meter_id}"] = self.txt_notes.toPlainText().strip()
         self.save_config()
+
+    def get_ports(self):
+        ports = serial.tools.list_ports.comports()
+        return ["Auto-Detect Apera Meter"] + [p.device for p in ports]
+
+    def refresh_ports(self):
+        ports = self.get_ports()
+        self.port_combo.clear()
+        self.port_combo.addItems(ports)
 
     def toggle_record(self):
         if not self.is_recording:
             self.is_recording = True
-            self.btn_record.configure(text="Stop Recording", fg_color="#e74c3c", hover_color="#c0392b")
+            self.btn_record.setText("Stop Recording")
+            self.btn_record.setStyleSheet("background-color: #e74c3c; color: white;")
             self.ax.set_title(f"Recording: Conductivity (Meter {self.meter_id})")
         else:
             self.is_recording = False
-            self.btn_record.configure(text="Start Recording", fg_color="#2ecc71", hover_color="#27ae60")
+            self.btn_record.setText("Start Recording")
+            self.btn_record.setStyleSheet("background-color: #2ecc71; color: white;")
             self.ax.set_title(f"Live (Not Recording): Conductivity (Meter {self.meter_id})")
         self.canvas.draw_idle()
 
+    def apply_limits(self):
+        self.auto_time_chk.setChecked(False)
+        self.auto_cond_chk.setChecked(False)
+        self.auto_temp_chk.setChecked(False)
+        self.plot_data()
+
+    def save_graph(self):
+        filepath, _ = QFileDialog.getSaveFileName(self, "Save Graph", "", "PNG (*.png)")
+        if filepath:
+            try:
+                self.fig.savefig(filepath, dpi=300, bbox_inches='tight')
+                QMessageBox.information(self, "Success", "Graph saved!")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", str(e))
+
+    def open_settings(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Settings - Meter {self.meter_id}")
+        dlg.resize(400, 200)
+        layout = QVBoxLayout(dlg)
+        
+        layout.addWidget(QLabel("Default Save Directory:"))
+        lbl_dir = QLabel(self.config.get(f"default_save_location_{self.meter_id}", "Not Set"))
+        layout.addWidget(lbl_dir)
+        
+        def choose_dir():
+            d = QFileDialog.getExistingDirectory(self, "Select Directory")
+            if d:
+                lbl_dir.setText(d)
+                self.config[f"default_save_location_{self.meter_id}"] = d
+                self.save_config()
+                
+        btn_dir = QPushButton("Browse...")
+        btn_dir.clicked.connect(choose_dir)
+        layout.addWidget(btn_dir)
+        
+        ka_chk = QCheckBox("Enable Keep-Alive (Ping every 2s)")
+        ka_chk.setChecked(self.config.get(f"keep_alive_{self.meter_id}", True))
+        def toggle_ka(state):
+            self.config[f"keep_alive_{self.meter_id}"] = (state == Qt.CheckState.Checked.value)
+            self.save_config()
+        ka_chk.stateChanged.connect(toggle_ka)
+        layout.addWidget(ka_chk)
+        
+        dlg.exec()
+
+    def clear_log(self):
+        self.table.setRowCount(0)
+        self.received_timestamps.clear()
+        self.plot_dates.clear()
+        self.plot_conds.clear()
+        self.plot_temps.clear()
+        self.last_auto_dump_time = time.time()
+        
+        try:
+            with open(self.emergency_backup_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(self.columns)
+        except: pass
+        self.plot_data()
+
     def recover_session(self):
         if not os.path.exists(self.emergency_backup_path):
-            messagebox.showinfo("Recover", "No backup file found to recover.")
+            QMessageBox.information(self, "Recover", "No backup file found to recover.")
             return
             
         try:
@@ -275,206 +408,28 @@ class MeterController(ctk.CTkFrame):
             for row in rows:
                 if len(row) >= 6:
                     self.received_timestamps.add(row[0])
-                    self.tree.insert("", "end", values=row)
+                    r = self.table.rowCount()
+                    self.table.insertRow(r)
+                    for col, val in enumerate(row):
+                        self.table.setItem(r, col, QTableWidgetItem(str(val)))
                     
                     try:
                         dt = datetime.datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
-                        cond = float(row[2])
-                        temp = float(row[4])
                         self.plot_dates.append(dt)
-                        self.plot_conds.append(cond)
-                        self.plot_temps.append(temp)
-                    except Exception:
-                        pass
+                        self.plot_conds.append(float(row[2]) if row[2] else 0.0)
+                        self.plot_temps.append(float(row[4]) if row[4] else 0.0)
+                    except: pass
                         
             self.plot_data()
-            messagebox.showinfo("Recover", f"Recovered {len(rows)} points.")
+            QMessageBox.information(self, "Recover", f"Recovered {len(rows)} points.")
         except Exception as e:
-            messagebox.showerror("Error", f"Recovery failed: {e}")
-
-    def apply_limits(self):
-        self.auto_time_var.set(False)
-        self.auto_cond_var.set(False)
-        self.auto_temp_var.set(False)
-        self.plot_data()
-
-    def save_graph(self):
-        filepath = filedialog.asksaveasfilename(defaultextension=".png", title="Save Graph", filetypes=[("PNG", "*.png")])
-        if filepath:
-            try:
-                self.fig.savefig(filepath, dpi=300, bbox_inches='tight')
-                messagebox.showinfo("Success", "Graph saved!")
-            except Exception as e:
-                messagebox.showerror("Error", str(e))
-
-
-
-    def open_settings(self):
-        top = ctk.CTkToplevel(self)
-        top.title(f"Settings - Meter {self.meter_id}")
-        top.geometry("400x300")
-        top.attributes("-topmost", True)
-        
-        ctk.CTkLabel(top, text="Default Save Directory:", font=ctk.CTkFont(weight="bold")).pack(pady=(20,5))
-        lbl_dir = ctk.CTkLabel(top, text=self.config.get(f"default_save_location_{self.meter_id}", "Not Set"), text_color="gray")
-        lbl_dir.pack(pady=5)
-        
-        def choose_dir():
-            d = filedialog.askdirectory()
-            if d:
-                lbl_dir.configure(text=d)
-                self.config[f"default_save_location_{self.meter_id}"] = d
-                self.save_config()
-                
-        ctk.CTkButton(top, text="Browse...", command=choose_dir).pack(pady=5)
-        
-        keep_alive_var = ctk.BooleanVar(value=self.config.get(f"keep_alive_{self.meter_id}", True))
-        def toggle_ka():
-            self.config[f"keep_alive_{self.meter_id}"] = keep_alive_var.get()
-            self.save_config()
-            
-        chk = ctk.CTkCheckBox(top, text="Enable Keep-Alive (Ping every 2s)", variable=keep_alive_var, command=toggle_ka)
-        chk.pack(pady=30)
-
-    def _sort_treeview(self, col, reverse):
-        items = [(self.tree.set(k, col), k) for k in self.tree.get_children("")]
-        try:
-            items.sort(key=lambda t: float(t[0]) if t[0] else -9999, reverse=reverse)
-        except ValueError:
-            items.sort(reverse=reverse)
-        for index, (_, k) in enumerate(items):
-            self.tree.move(k, "", index)
-        self.tree.heading(col, command=lambda: self._sort_treeview(col, not reverse))
-
-    def load_config(self):
-        if os.path.exists(self.config_path):
-            try:
-                with open(self.config_path, "r") as f:
-                    self.config.update(json.load(f))
-            except Exception: pass
-
-    def save_config(self):
-        try:
-            with open(self.config_path, "w") as f:
-                json.dump(self.config, f, indent=4)
-        except Exception: pass
-
-    def on_closing(self):
-        self.is_connected = False
-        time.sleep(0.5)
-        if self.ser and self.ser.is_open:
-            self.ser.close()
-
-    def get_ports(self):
-        ports = serial.tools.list_ports.comports()
-        return ["Auto-Detect Apera Meter"] + [p.device for p in ports]
-
-    def refresh_ports(self):
-        ports = self.get_ports()
-        self.port_combo.configure(values=ports)
-        target_com = self.config.get(f"default_com_port_{self.meter_id}", "Auto-Detect Apera Meter")
-        if target_com in ports:
-            self.port_combo.set(target_com)
-        elif ports:
-            self.port_combo.set(ports[0])
-
-    def log_point(self, dt, row_data):
-        self.plot_dates.append(dt)
-        self.plot_conds.append(float(row_data[2]) if row_data[2] else 0.0)
-        self.plot_temps.append(float(row_data[4]) if row_data[4] else 0.0)
-        
-        self.tree.insert("", "end", values=row_data)
-        self.tree.yview_moveto(1)
-        self.unsaved_changes = True
-        
-        try:
-            with open(self.emergency_backup_path, "a", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(row_data)
-        except Exception: pass
-        
-        self.schedule_plot()
-
-    def schedule_plot(self):
-        if not getattr(self, "_plot_scheduled", False):
-            self._plot_scheduled = True
-            self.after(500, self.plot_data)
-
-    def plot_data(self):
-        self._plot_scheduled = False
-        self.ax.clear()
-        self.ax2.clear()
-
-        self.ax.set_yscale('log')
-        if self.is_recording:
-            self.ax.set_title(f"Recording: Conductivity (Meter {self.meter_id})")
-        else:
-            self.ax.set_title(f"Live: Conductivity (Meter {self.meter_id})")
-            
-        self.ax.set_xlabel("Time")
-        self.ax.set_ylabel("Conductivity (uS/cm)", color='#3498db')
-        self.ax.grid(True, linestyle='--', alpha=0.3)
-        self.ax2.set_ylabel("Temperature (°C)", color='#e74c3c')
-        
-        if self.plot_dates:
-            self.ax.plot(self.plot_dates, self.plot_conds, marker='o', linestyle='-', color='#3498db', label="Cond")
-            self.ax.tick_params(axis='y', labelcolor='#3498db')
-            
-            if not self.auto_time_var.get():
-                try:
-                    import datetime
-                    win_min = float(self.ent_time_win.get())
-                    xmax = self.plot_dates[-1]
-                    xmin = xmax - datetime.timedelta(minutes=win_min)
-                    self.ax.set_xlim(xmin, xmax)
-                except Exception: pass
-            
-            if not self.auto_cond_var.get():
-                try:
-                    cmin = float(self.ent_cond_min.get())
-                    cmax = float(self.ent_cond_max.get())
-                    self.ax.set_ylim(cmin, cmax)
-                except ValueError: pass
-                
-            self.ax2.plot(self.plot_dates, self.plot_temps, marker='s', linestyle='-', color='#e74c3c', label="Temp")
-            self.ax2.tick_params(axis='y', labelcolor='#e74c3c')
-            
-            if not self.auto_temp_var.get():
-                try:
-                    tmin = float(self.ent_temp_min.get())
-                    tmax = float(self.ent_temp_max.get())
-                    self.ax2.set_ylim(tmin, tmax)
-                except ValueError: pass
-                
-            self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-            self.fig.autofmt_xdate()
-            
-        self.fig.tight_layout()
-        self.canvas.draw_idle()
-
-    def clear_log(self):
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        self.received_timestamps.clear()
-        self.plot_dates.clear()
-        self.plot_conds.clear()
-        self.plot_temps.clear()
-        self.last_auto_dump_time = time.time()
-        
-        # Clear backup CSV
-        try:
-            with open(self.emergency_backup_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(self.columns)
-        except Exception: pass
-        
-        self.plot_data()
+            QMessageBox.critical(self, "Error", f"Recovery failed: {e}")
 
     def toggle_connection(self):
         if self.is_connected:
-            self.disconnect()
+            self.disconnect_meter()
         else:
-            self.connect()
+            self.connect_meter()
 
     def find_apera_meter(self):
         with scan_lock:
@@ -492,56 +447,66 @@ class MeterController(ctk.CTkFrame):
                     ts.close()
                     if b'<SH' in resp or b'<SL' in resp or b'#>' in resp:
                         return p
-                except Exception: pass
+                except: pass
             return None
 
-    def connect(self):
-        port = self.port_combo.get()
+    def connect_meter(self):
+        port = self.port_combo.currentText()
         if port == "Auto-Detect Apera Meter":
-            self.lbl_status.configure(text="Status: Scanning COM ports...")
-            self.btn_connect.configure(state="disabled")
-            def scan_thread():
-                found_port = self.find_apera_meter()
-                self.after(0, self._finish_connect, found_port)
-            threading.Thread(target=scan_thread, daemon=True).start()
+            self.lbl_status.setText("Status: Scanning COM ports...")
+            self.btn_connect.setEnabled(False)
+            threading.Thread(target=self._scan_thread_task, daemon=True).start()
             return
         self._finish_connect(port)
-        
+
+    def _scan_thread_task(self):
+        found_port = self.find_apera_meter()
+        QTimer.singleShot(0, lambda: self._finish_connect(found_port))
+
     def _finish_connect(self, port):
-        self.btn_connect.configure(state="normal")
+        self.btn_connect.setEnabled(True)
         if not port or port == "No Ports Found":
-            self.lbl_status.configure(text="Status: Auto-Detect Failed", text_color="#E74C3C")
+            self.lbl_status.setText("Status: Auto-Detect Failed")
+            self.lbl_status.setStyleSheet("color: #E74C3C;")
             return
+            
         try:
-            self.port_combo.set(port)
+            idx = self.port_combo.findText(port)
+            if idx >= 0: self.port_combo.setCurrentIndex(idx)
+            
             self.ser = serial.Serial(port, 115200, timeout=0.1)
             self.ser.setDTR(False)
             self.ser.setRTS(False)
             self.is_connected = True
-            self.btn_connect.configure(text="Disconnect", fg_color="#C0392B", hover_color="#922B21")
-            self.btn_download.configure(state="normal")
-            self.btn_sync.configure(state="normal")
-            self.lbl_status.configure(text=f"Status: Connected to {port}", text_color="#2ECC71")
+            
+            self.btn_connect.setText("Disconnect")
+            self.btn_download.setEnabled(True)
+            self.btn_sync.setEnabled(True)
+            self.lbl_status.setText(f"Status: Connected to {port}")
+            self.lbl_status.setStyleSheet("color: #2ECC71;")
             
             self.ser.write(b"&OK#\r\n")
-            self.after(500, self.sync_time)
+            QTimer.singleShot(500, self.sync_time)
+            
             threading.Thread(target=self.read_serial_loop, daemon=True).start()
             threading.Thread(target=self.keep_alive_loop, daemon=True).start()
             threading.Thread(target=self.auto_dump_loop, daemon=True).start()
         except Exception as e:
-            self.lbl_status.configure(text=f"Failed to connect: {e}", text_color="#E74C3C")
+            self.lbl_status.setText(f"Failed to connect: {e}")
+            self.lbl_status.setStyleSheet("color: #E74C3C;")
 
-    def disconnect(self):
+    def disconnect_meter(self):
         self.is_connected = False
         time.sleep(0.5)
         if self.ser and self.ser.is_open:
             self.ser.close()
-        self.btn_connect.configure(text="Connect", fg_color=["#3a7ebf", "#1f538d"], hover_color=["#325882", "#14375e"])
-        self.btn_download.configure(state="disabled")
-        self.btn_sync.configure(state="disabled")
-        self.lbl_status.configure(text="Status: Disconnected", text_color="gray")
-        self.sn_label.configure(text="SN: Unknown")
-        self.model_label.configure(text="Model: Unknown")
+        self.btn_connect.setText("Connect")
+        self.btn_download.setEnabled(False)
+        self.btn_sync.setEnabled(False)
+        self.lbl_status.setText("Status: Disconnected")
+        self.lbl_status.setStyleSheet("color: gray;")
+        self.sn_label.setText("SN: Unknown")
+        self.model_label.setText("Model: Unknown")
 
     def read_serial_loop(self):
         buffer = b""
@@ -558,15 +523,16 @@ class MeterController(ctk.CTkFrame):
                         buffer = buffer[idx+1:]
                         self.process_packet(packet)
             except Exception:
-                self.after(0, self.disconnect)
+                self.signals.update_status.emit("Status: Disconnected (Error)", "gray")
+                self.is_connected = False
                 break
             time.sleep(0.05)
 
     def auto_dump_loop(self):
         while self.is_connected:
-            time.sleep(10) 
-            if self.is_connected and self.auto_dump_var.get():
-                try: hours = float(self.auto_dump_entry.get())
+            time.sleep(10)
+            if self.is_connected and self.auto_dump_chk.isChecked():
+                try: hours = float(self.auto_dump_entry.text())
                 except ValueError: continue
                 if time.time() - self.last_auto_dump_time > (hours * 3600):
                     self.last_auto_dump_time = time.time()
@@ -580,14 +546,14 @@ class MeterController(ctk.CTkFrame):
                     try:
                         if self.ser and self.ser.is_open:
                             self.ser.write(b"&OK#\r\n")
-                    except Exception: pass
+                    except: pass
             time.sleep(1.5)
 
     def process_packet(self, packet):
         if not packet: return
         packet = packet.strip(b'\r\n')
         p_len = len(packet)
-        if p_len < 3 or packet == b'>' or packet == b'#>': return 
+        if p_len < 3 or packet == b'>' or packet == b'#>': return
             
         if (packet.startswith(b'<DS') or packet.startswith(b'<DN')) and p_len >= 12:
             self.last_data_time = time.time()
@@ -638,25 +604,116 @@ class MeterController(ctk.CTkFrame):
                 dt_str = f"20{yy:02d}-{mt:02d}-{dd:02d} {hh:02d}:{mm:02d}:{ss:02d}"
                 dt_obj = datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
                 
-                if dt_str in self.received_timestamps:
-                    return
+                if dt_str in self.received_timestamps: return
                 self.received_timestamps.add(dt_str)
                 
                 row_data = (dt_str, mode_str, cond_us, cond_ms, f"{temp_c:.1f}", str(w4))
                 
                 if self.is_recording:
-                    self.after(0, self.log_point, dt_obj, row_data)
+                    self.signals.update_tree.emit(dt_obj, row_data)
                     
             except Exception: pass
                 
         elif packet.startswith(b'<SH') and p_len >= 12:
             payload = packet[3:11]
             hex_str = "-".join([f"{b:02X}" for b in payload])
-            self.after(0, lambda: self.sn_label.configure(text=f"SN: {hex_str}"))
+            self.signals.update_device_info.emit("SN", hex_str)
         elif packet.startswith(b'<P2') and p_len >= 12:
             payload = packet[3:11]
             hex_str = "-".join([f"{b:02X}" for b in payload])
-            self.after(0, lambda: self.model_label.configure(text=f"Model: {hex_str}"))
+            self.signals.update_device_info.emit("Model", hex_str)
+
+    def log_point_ui(self, dt, row_data):
+        self.plot_dates.append(dt)
+        self.plot_conds.append(float(row_data[2]) if row_data[2] else 0.0)
+        self.plot_temps.append(float(row_data[4]) if row_data[4] else 0.0)
+        
+        row_idx = self.table.rowCount()
+        self.table.insertRow(row_idx)
+        for col, text in enumerate(row_data):
+            self.table.setItem(row_idx, col, QTableWidgetItem(str(text)))
+        self.table.scrollToBottom()
+        self.unsaved_changes = True
+        
+        try:
+            with open(self.emergency_backup_path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(row_data)
+        except: pass
+        
+        self.schedule_plot()
+
+    def set_status(self, text, color):
+        self.lbl_status.setText(text)
+        self.lbl_status.setStyleSheet(f"color: {color};")
+        if text.endswith("(Error)"):
+            self.btn_connect.setText("Connect")
+            self.btn_download.setEnabled(False)
+            self.btn_sync.setEnabled(False)
+
+    def set_device_info(self, typ, val):
+        if typ == "SN": self.sn_label.setText(f"SN: {val}")
+        elif typ == "Model": self.model_label.setText(f"Model: {val}")
+
+    def schedule_plot(self):
+        if not getattr(self, "_plot_scheduled", False):
+            self._plot_scheduled = True
+            QTimer.singleShot(500, self.plot_data)
+
+    def plot_data(self):
+        self._plot_scheduled = False
+        self.ax.clear()
+        self.ax2.clear()
+
+        self.ax.set_yscale('log')
+        if self.is_recording:
+            self.ax.set_title(f"Recording: Conductivity (Meter {self.meter_id})", color='white')
+        else:
+            self.ax.set_title(f"Live: Conductivity (Meter {self.meter_id})", color='white')
+            
+        self.ax.set_xlabel("Time", color='white')
+        self.ax.set_ylabel("Conductivity (uS/cm)", color='#3498db')
+        self.ax.grid(True, linestyle='--', alpha=0.3)
+        self.ax.tick_params(colors='white')
+        self.ax2.set_ylabel("Temperature (°C)", color='#e74c3c')
+        self.ax2.tick_params(colors='white')
+        
+        # Style adjustments for dark theme integration
+        self.fig.patch.set_facecolor('#1e1e2e')
+        self.ax.set_facecolor('#1e1e2e')
+        
+        if self.plot_dates:
+            self.ax.plot(self.plot_dates, self.plot_conds, marker='o', linestyle='-', color='#3498db', label="Cond")
+            
+            if not self.auto_time_chk.isChecked():
+                try:
+                    win_min = float(self.ent_time_win.text())
+                    xmax = self.plot_dates[-1]
+                    xmin = xmax - datetime.timedelta(minutes=win_min)
+                    self.ax.set_xlim(xmin, xmax)
+                except: pass
+            
+            if not self.auto_cond_chk.isChecked():
+                try:
+                    cmin = float(self.ent_cond_min.text())
+                    cmax = float(self.ent_cond_max.text())
+                    self.ax.set_ylim(cmin, cmax)
+                except: pass
+                
+            self.ax2.plot(self.plot_dates, self.plot_temps, marker='s', linestyle='-', color='#e74c3c', label="Temp")
+            
+            if not self.auto_temp_chk.isChecked():
+                try:
+                    tmin = float(self.ent_temp_min.text())
+                    tmax = float(self.ent_temp_max.text())
+                    self.ax2.set_ylim(tmin, tmax)
+                except: pass
+                
+            self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+            self.fig.autofmt_xdate()
+            
+        self.fig.tight_layout()
+        self.canvas.draw_idle()
 
     def sync_time(self):
         if self.is_connected and self.ser:
@@ -670,24 +727,22 @@ class MeterController(ctk.CTkFrame):
                 ])
                 packet.extend(b'\r\n')
                 self.ser.write(packet)
-            except Exception: pass
+            except: pass
 
     def download_memory(self):
         if self.is_connected and self.ser:
-            self.lbl_status.configure(text="Status: Downloading Memory...")
+            self.lbl_status.setText("Status: Downloading Memory...")
             self.ser.write(b"&WA#\r\n")
 
     def export_data(self):
-        if not self.tree.get_children():
-            self.lbl_status.configure(text="Status: No data to export.")
+        if self.table.rowCount() == 0:
+            QMessageBox.information(self, "Export", "No data to export.")
             return
             
         dt_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filepath = filedialog.asksaveasfilename(
-            defaultextension=".xlsx",
-            initialfile=f"Meter{self.meter_id}_{dt_str}.xlsx",
-            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
-        )
+        initial_file = f"Meter{self.meter_id}_{dt_str}.xlsx"
+        
+        filepath, _ = QFileDialog.getSaveFileName(self, "Export Excel", initial_file, "Excel files (*.xlsx);;All files (*.*)")
         if not filepath: return
         
         try:
@@ -699,10 +754,10 @@ class MeterController(ctk.CTkFrame):
             doc_ws["A3"] = "Export Date:"
             doc_ws["B3"] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             doc_ws["A4"] = "Meter SN:"
-            doc_ws["B4"] = self.sn_label.cget("text").replace("SN: ", "")
+            doc_ws["B4"] = self.sn_label.text().replace("SN: ", "")
             doc_ws["A5"] = "Experiment Notes:"
             doc_ws["A5"].font = Font(bold=True)
-            doc_ws["A6"] = self.txt_notes.get("0.0", "end").strip()
+            doc_ws["A6"] = self.txt_notes.toPlainText()
             doc_ws["A6"].alignment = Alignment(wrap_text=True, vertical="top")
             doc_ws.row_dimensions[6].height = 100
             doc_ws.column_dimensions["A"].width = 25
@@ -711,59 +766,58 @@ class MeterController(ctk.CTkFrame):
             data_ws = wb.create_sheet("Data")
             data_ws.append(self.columns)
             for cell in data_ws[1]: cell.font = Font(bold=True)
-            for item in self.tree.get_children():
-                row = self.tree.item(item, 'values')
-                out_row = []
-                for val in row:
-                    try: out_row.append(float(val))
-                    except ValueError: out_row.append(val)
-                data_ws.append(out_row)
+            
+            for r in range(self.table.rowCount()):
+                row_data = []
+                for c in range(self.table.columnCount()):
+                    val = self.table.item(r, c).text()
+                    try: row_data.append(float(val))
+                    except ValueError: row_data.append(val)
+                data_ws.append(row_data)
                 
             wb.save(filepath)
-            self.lbl_status.configure(text=f"Status: Exported to Excel!")
+            self.lbl_status.setText(f"Status: Exported to Excel!")
             self.unsaved_changes = False
         except Exception as e:
-            self.lbl_status.configure(text=f"Status: Export failed! {e}")
+            QMessageBox.critical(self, "Error", f"Export failed! {e}")
 
-class MeterApp(ctk.CTk):
+class MeterApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.title("Apera Dual-Meter Control Center")
-        self.geometry("1400x800")
-        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.setWindowTitle("Apera Dual-Meter Control Center (PyQt6)")
+        self.resize(1400, 800)
         
-        self.tab_view = ctk.CTkTabview(self)
-        self.tab_view.pack(fill="both", expand=True, padx=10, pady=10)
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
         
-        self.tab1 = self.tab_view.add("Meter 1")
-        self.tab2 = self.tab_view.add("Meter 2")
+        self.meter1 = MeterController(meter_id=1, parent_app=self)
+        self.meter2 = MeterController(meter_id=2, parent_app=self)
         
-        self.meter1 = MeterController(self.tab1, meter_id=1, app_controller=self)
-        self.meter1.pack(fill="both", expand=True)
-        
-        self.meter2 = MeterController(self.tab2, meter_id=2, app_controller=self)
-        self.meter2.pack(fill="both", expand=True)
-        
+        self.tabs.addTab(self.meter1, "Meter 1")
+        self.tabs.addTab(self.meter2, "Meter 2")
+
     def get_used_ports(self):
         used = []
         if self.meter1.is_connected and self.meter1.ser: used.append(self.meter1.ser.port)
         if self.meter2.is_connected and self.meter2.ser: used.append(self.meter2.ser.port)
         return used
 
-    def on_closing(self):
+    def closeEvent(self, event):
         if self.meter1.unsaved_changes or self.meter2.unsaved_changes:
-            response = messagebox.askyesno("Unsaved Data", "You have unsaved experimental data!\\nAre you sure you want to close?")
-            if not response: return
-        self.meter1.on_closing()
-        self.meter2.on_closing()
-        self.destroy()
+            reply = QMessageBox.question(self, "Unsaved Data", "You have unsaved experimental data!\nAre you sure you want to close?",
+                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.No:
+                event.ignore()
+                return
+        
+        self.meter1.disconnect_meter()
+        self.meter2.disconnect_meter()
+        event.accept()
 
 if __name__ == "__main__":
-    import ctypes
-    try:
-        myappid = 'candr.conductivity_meter.1.0'
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-    except Exception: pass
+    app = QApplication(sys.argv)
+    app.setStyleSheet(qdarktheme.load_stylesheet("dark"))
     
-    app = MeterApp()
-    app.mainloop()
+    window = MeterApp()
+    window.show()
+    sys.exit(app.exec())

@@ -1,4 +1,6 @@
-customtkinter
+PyQt6
+pyqtdarktheme
 pyserial
 matplotlib
 openpyxl
+pyinstaller
