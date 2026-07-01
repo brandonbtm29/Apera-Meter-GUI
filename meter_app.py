@@ -167,16 +167,22 @@ class MeterController(QWidget):
         left_layout.addWidget(self.auto_temp_chk)
         
         form_layout = QFormLayout()
-        self.ent_time_win = QLineEdit("10.0")
-        self.ent_cond_min = QLineEdit()
-        self.ent_cond_max = QLineEdit()
-        self.ent_temp_min = QLineEdit()
-        self.ent_temp_max = QLineEdit()
+        self.ent_time_win = QLineEdit(str(self.config.get(f"time_win_{self.meter_id}", "10.0")))
+        self.ent_cond_min = QLineEdit(str(self.config.get(f"cond_min_{self.meter_id}", "0")))
+        self.ent_cond_max = QLineEdit(str(self.config.get(f"cond_max_{self.meter_id}", "5000")))
+        self.ent_temp_min = QLineEdit(str(self.config.get(f"temp_min_{self.meter_id}", "15")))
+        self.ent_temp_max = QLineEdit(str(self.config.get(f"temp_max_{self.meter_id}", "35")))
         form_layout.addRow("Time Window (min):", self.ent_time_win)
         form_layout.addRow("Cond Min:", self.ent_cond_min)
         form_layout.addRow("Cond Max:", self.ent_cond_max)
         form_layout.addRow("Temp Min (°C):", self.ent_temp_min)
         form_layout.addRow("Temp Max (°C):", self.ent_temp_max)
+        
+        self.xaxis_combo = QComboBox()
+        self.xaxis_combo.addItems(["X-Axis: DateTime", "X-Axis: Duration (min)"])
+        self.xaxis_combo.setCurrentText(self.config.get(f"xaxis_{self.meter_id}", "X-Axis: DateTime"))
+        form_layout.addRow("Plot Mode:", self.xaxis_combo)
+        
         left_layout.addLayout(form_layout)
         
         self.btn_apply_lims = QPushButton("📊 Apply Limits")
@@ -358,6 +364,16 @@ class MeterController(QWidget):
         self.canvas.draw_idle()
 
     def apply_limits(self):
+        try:
+            self.config[f"time_win_{self.meter_id}"] = self.ent_time_win.text()
+            self.config[f"cond_min_{self.meter_id}"] = self.ent_cond_min.text()
+            self.config[f"cond_max_{self.meter_id}"] = self.ent_cond_max.text()
+            self.config[f"temp_min_{self.meter_id}"] = self.ent_temp_min.text()
+            self.config[f"temp_max_{self.meter_id}"] = self.ent_temp_max.text()
+            self.config[f"xaxis_{self.meter_id}"] = self.xaxis_combo.currentText()
+            self.save_config()
+        except Exception: pass
+        
         self.auto_time_chk.setChecked(False)
         self.auto_cond_chk.setChecked(False)
         self.auto_temp_chk.setChecked(False)
