@@ -90,7 +90,7 @@ class MeterController(QWidget):
         if not docs or not os.path.isdir(docs):
             docs = os.path.join(os.environ.get('USERPROFILE', os.path.expanduser('~')), 'Documents')
         self.emergency_backup_path = os.path.join(docs, f"Apera_Meter{meter_id}_Backup.csv")
-        self.columns = ("DateTime", "Mode", "Cond (uS/cm)", "Cond (mS/cm)", "Temp (°C)", "Raw Cond_ADC")
+        self.columns = ("DateTime", "Duration (min)", "Mode", "Cond (uS/cm)", "Cond (mS/cm)", "Temp (°C)", "Raw Cond_ADC")
         
         self.init_ui()
         self.init_backup_file()
@@ -415,6 +415,7 @@ class MeterController(QWidget):
         self.plot_dates.clear()
         self.plot_conds.clear()
         self.plot_temps.clear()
+        self.session_start_time = None
         self.last_auto_dump_time = time.time()
         
         try:
@@ -448,9 +449,11 @@ class MeterController(QWidget):
                     
                     try:
                         dt = datetime.datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+                        if not getattr(self, 'session_start_time', None):
+                            self.session_start_time = dt
                         self.plot_dates.append(dt)
-                        self.plot_conds.append(float(row[2]) if row[2] else 0.0)
-                        self.plot_temps.append(float(row[4]) if row[4] else 0.0)
+                        self.plot_conds.append(float(row[3]) if row[3] else 0.0)
+                        self.plot_temps.append(float(row[5]) if row[5] else 0.0)
                     except: pass
                         
             self.table.setSortingEnabled(True)
@@ -737,13 +740,28 @@ class MeterController(QWidget):
         self.ax.set_facecolor('#1e1e2e')
         
         if self.plot_dates:
-            self.ax.plot(self.plot_dates, self.plot_conds, marker='o', linestyle='-', color='#3498db', label="Cond")
+            import matplotlib.ticker as ticker
+            
+            is_duration = self.xaxis_combo.currentText() == "X-Axis: Duration (min)"
+            if is_duration:
+                if not getattr(self, 'session_start_time', None):
+                    self.session_start_time = self.plot_dates[0]
+                x_data = [(d - self.session_start_time).total_seconds() / 60.0 for d in self.plot_dates]
+                self.ax.set_xlabel("Duration (min)", color='white')
+            else:
+                x_data = self.plot_dates
+                self.ax.set_xlabel("Time", color='white')
+                
+            self.ax.plot(x_data, self.plot_conds, marker='o', linestyle='-', color='#3498db', label="Cond")
             
             if not self.auto_time_chk.isChecked():
                 try:
                     win_min = float(self.ent_time_win.text())
-                    xmax = self.plot_dates[-1]
-                    xmin = xmax - datetime.timedelta(minutes=win_min)
+                    xmax = x_data[-1]
+                    if is_duration:
+                        xmin = xmax - win_min
+                    else:
+                        xmin = xmax - datetime.timedelta(minutes=win_min)
                     self.ax.set_xlim(xmin, xmax)
                 except: pass
             
@@ -754,7 +772,7 @@ class MeterController(QWidget):
                     self.ax.set_ylim(cmin, cmax)
                 except: pass
                 
-            self.ax2.plot(self.plot_dates, self.plot_temps, marker='s', linestyle='-', color='#e74c3c', label="Temp")
+            self.ax2.plot(x_data, self.plot_temps, marker='s', linestyle='-', color='#e74c3c', label="Temp")
             
             if not self.auto_temp_chk.isChecked():
                 try:
@@ -763,8 +781,12 @@ class MeterController(QWidget):
                     self.ax2.set_ylim(tmin, tmax)
                 except: pass
                 
-            self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-            self.fig.autofmt_xdate()
+            if is_duration:
+                self.ax.xaxis.set_major_formatter(ticker.ScalarFormatter())
+                self.fig.autofmt_xdate(rotation=0, ha='center')
+            else:
+                self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+                self.fig.autofmt_xdate()
             
         self.fig.tight_layout()
         self.canvas.draw_idle()
