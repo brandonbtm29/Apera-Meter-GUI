@@ -37,6 +37,15 @@ import matplotlib.dates as mdates
 
 scan_lock = threading.Lock()
 
+class NumericTableWidgetItem(QTableWidgetItem):
+    def __lt__(self, other):
+        if (isinstance(other, QTableWidgetItem)):
+            try:
+                return float(self.text()) < float(other.text())
+            except ValueError:
+                return self.text() < other.text()
+        return super(NumericTableWidgetItem, self).__lt__(other)
+
 class WorkerSignals(QObject):
     update_tree = pyqtSignal(object, tuple)
     update_status = pyqtSignal(str, str)
@@ -86,6 +95,12 @@ class MeterController(QWidget):
         self.init_ui()
         self.init_backup_file()
         
+        if os.path.exists(self.emergency_backup_path):
+            with open(self.emergency_backup_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+                if len(lines) > 1:
+                    self.recover_session()
+        
         self.refresh_ports()
         target_com = self.config.get(f"default_com_port_{self.meter_id}", "Auto-Detect Apera Meter")
         idx = self.port_combo.findText(target_com)
@@ -118,7 +133,7 @@ class MeterController(QWidget):
         lbl_rec.setFont(QFont("Arial", 12, QFont.Weight.Bold))
         left_layout.addWidget(lbl_rec)
         
-        self.btn_record = QPushButton("Start Recording")
+        self.btn_record = QPushButton("▶️ Start Recording")
         self.btn_record.setStyleSheet("background-color: #2ecc71; color: white;")
         self.btn_record.clicked.connect(self.toggle_record)
         left_layout.addWidget(self.btn_record)
@@ -164,7 +179,7 @@ class MeterController(QWidget):
         form_layout.addRow("Temp Max (°C):", self.ent_temp_max)
         left_layout.addLayout(form_layout)
         
-        self.btn_apply_lims = QPushButton("Apply Limits")
+        self.btn_apply_lims = QPushButton("📊 Apply Limits")
         self.btn_apply_lims.clicked.connect(self.apply_limits)
         left_layout.addWidget(self.btn_apply_lims)
         
@@ -172,7 +187,7 @@ class MeterController(QWidget):
         line2.setFrameShape(QFrame.Shape.HLine)
         left_layout.addWidget(line2)
         
-        self.btn_settings = QPushButton("Advanced Settings")
+        self.btn_settings = QPushButton("⚙️ Advanced Settings")
         self.btn_settings.clicked.connect(self.open_settings)
         left_layout.addWidget(self.btn_settings)
         left_layout.addStretch()
@@ -215,11 +230,11 @@ class MeterController(QWidget):
         self.port_combo = QComboBox()
         right_layout.addWidget(self.port_combo)
         
-        self.btn_refresh = QPushButton("Refresh Ports")
+        self.btn_refresh = QPushButton("🔄 Refresh Ports")
         self.btn_refresh.clicked.connect(self.refresh_ports)
         right_layout.addWidget(self.btn_refresh)
         
-        self.btn_connect = QPushButton("Connect")
+        self.btn_connect = QPushButton("🔌 Connect")
         self.btn_connect.clicked.connect(self.toggle_connection)
         right_layout.addWidget(self.btn_connect)
         
@@ -248,33 +263,38 @@ class MeterController(QWidget):
         line4.setFrameShape(QFrame.Shape.HLine)
         right_layout.addWidget(line4)
         
-        self.btn_sync = QPushButton("Sync Meter Time")
+        self.btn_sync = QPushButton("⏱️ Sync Meter Time")
         self.btn_sync.setEnabled(False)
         self.btn_sync.clicked.connect(self.sync_time)
         right_layout.addWidget(self.btn_sync)
         
-        self.btn_download = QPushButton("Download Raw Memory")
+        self.btn_download = QPushButton("📥 Download Raw Memory")
         self.btn_download.setEnabled(False)
         self.btn_download.clicked.connect(self.download_memory)
         right_layout.addWidget(self.btn_download)
         
-        self.btn_export = QPushButton("Save Log to Excel")
+        self.btn_export = QPushButton("💾 Save Log to Excel")
         self.btn_export.setStyleSheet("background-color: #27ae60; color: white;")
         self.btn_export.clicked.connect(self.export_data)
         right_layout.addWidget(self.btn_export)
         
-        self.btn_save_graph = QPushButton("Save Graph PNG")
+        self.btn_save_graph = QPushButton("🖼️ Save Graph PNG")
         self.btn_save_graph.clicked.connect(self.save_graph)
         right_layout.addWidget(self.btn_save_graph)
         
-        self.btn_recover = QPushButton("Recover Session")
+        self.btn_recover = QPushButton("♻️ Recover Session")
         self.btn_recover.clicked.connect(self.recover_session)
         right_layout.addWidget(self.btn_recover)
         
-        self.btn_clear = QPushButton("Clear Data")
+        self.btn_clear = QPushButton("🗑️ Clear Data")
         self.btn_clear.setStyleSheet("background-color: #c0392b; color: white;")
         self.btn_clear.clicked.connect(self.clear_log)
         right_layout.addWidget(self.btn_clear)
+        
+        self.btn_restart = QPushButton("🔁 Restart Application")
+        self.btn_restart.setStyleSheet("background-color: #8e44ad; color: white;")
+        self.btn_restart.clicked.connect(self.restart_app)
+        right_layout.addWidget(self.btn_restart)
         
         right_layout.addStretch()
         
@@ -327,12 +347,12 @@ class MeterController(QWidget):
     def toggle_record(self):
         if not self.is_recording:
             self.is_recording = True
-            self.btn_record.setText("Stop Recording")
+            self.btn_record.setText("⏹️ Stop Recording")
             self.btn_record.setStyleSheet("background-color: #e74c3c; color: white;")
             self.ax.set_title(f"Recording: Conductivity (Meter {self.meter_id})")
         else:
             self.is_recording = False
-            self.btn_record.setText("Start Recording")
+            self.btn_record.setText("▶️ Start Recording")
             self.btn_record.setStyleSheet("background-color: #2ecc71; color: white;")
             self.ax.set_title(f"Live (Not Recording): Conductivity (Meter {self.meter_id})")
         self.canvas.draw_idle()
@@ -383,6 +403,12 @@ class MeterController(QWidget):
         
         dlg.exec()
 
+    def restart_app(self):
+        import sys
+        import os
+        self.app_controller.close()
+        os.execv(sys.executable, ['python'] + sys.argv)
+        
     def clear_log(self):
         self.table.setRowCount(0)
         self.received_timestamps.clear()
@@ -411,13 +437,14 @@ class MeterController(QWidget):
                 
             self.clear_log()
             
+            self.table.setSortingEnabled(False)
             for row in rows:
                 if len(row) >= 6:
                     self.received_timestamps.add(row[0])
                     r = self.table.rowCount()
                     self.table.insertRow(r)
                     for col, val in enumerate(row):
-                        self.table.setItem(r, col, QTableWidgetItem(str(val)))
+                        self.table.setItem(r, col, NumericTableWidgetItem(str(val)))
                     
                     try:
                         dt = datetime.datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
@@ -426,6 +453,7 @@ class MeterController(QWidget):
                         self.plot_temps.append(float(row[4]) if row[4] else 0.0)
                     except: pass
                         
+            self.table.setSortingEnabled(True)
             self.plot_data()
             QMessageBox.information(self, "Recover", f"Recovered {len(rows)} points.")
         except Exception as e:
@@ -503,7 +531,7 @@ class MeterController(QWidget):
             self.ser.setRTS(False)
             self.is_connected = True
             
-            self.btn_connect.setText("Disconnect")
+            self.btn_connect.setText("❌ Disconnect")
             self.btn_download.setEnabled(True)
             self.btn_sync.setEnabled(True)
             self.lbl_status.setText(f"Status: Connected to {port}")
@@ -524,7 +552,7 @@ class MeterController(QWidget):
         time.sleep(0.5)
         if self.ser and self.ser.is_open:
             self.ser.close()
-        self.btn_connect.setText("Connect")
+        self.btn_connect.setText("🔌 Connect")
         self.btn_download.setEnabled(False)
         self.btn_sync.setEnabled(False)
         self.lbl_status.setText("Status: Disconnected")
@@ -652,10 +680,12 @@ class MeterController(QWidget):
         self.plot_conds.append(float(row_data[2]) if row_data[2] else 0.0)
         self.plot_temps.append(float(row_data[4]) if row_data[4] else 0.0)
         
+        self.table.setSortingEnabled(False)
         row_idx = self.table.rowCount()
         self.table.insertRow(row_idx)
         for col, text in enumerate(row_data):
-            self.table.setItem(row_idx, col, QTableWidgetItem(str(text)))
+            self.table.setItem(row_idx, col, NumericTableWidgetItem(str(text)))
+        self.table.setSortingEnabled(True)
         self.table.scrollToBottom()
         self.unsaved_changes = True
         
@@ -671,7 +701,7 @@ class MeterController(QWidget):
         self.lbl_status.setText(text)
         self.lbl_status.setStyleSheet(f"color: {color};")
         if text.endswith("(Error)"):
-            self.btn_connect.setText("Connect")
+            self.btn_connect.setText("🔌 Connect")
             self.btn_download.setEnabled(False)
             self.btn_sync.setEnabled(False)
 
