@@ -1,10 +1,16 @@
 import sys
+import os
+
+# Ensure the working directory is the location of the script
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if os.getcwd() != script_dir:
+    os.chdir(script_dir)
+
 import serial
 import serial.tools.list_ports
 import threading
 import time
 import datetime
-import os
 import struct
 import csv
 import json
@@ -455,15 +461,33 @@ class MeterController(QWidget):
         if port == "Auto-Detect Apera Meter":
             self.lbl_status.setText("Status: Scanning COM ports...")
             self.btn_connect.setEnabled(False)
-            threading.Thread(target=self._scan_thread_task, daemon=True).start()
+            
+            self.scan_id = getattr(self, 'scan_id', 0) + 1
+            current_id = self.scan_id
+            
+            def timeout_scan():
+                if getattr(self, 'scan_id', None) == current_id:
+                    self.scan_id = None
+                    self.btn_connect.setEnabled(True)
+                    self.lbl_status.setText("Status: Auto-Detect Timeout")
+                    self.lbl_status.setStyleSheet("color: #E74C3C;")
+                    
+            QTimer.singleShot(7000, timeout_scan)
+            
+            threading.Thread(target=self._scan_thread_task, args=(current_id,), daemon=True).start()
             return
+            
+        self.scan_id = None
         self._finish_connect(port)
 
-    def _scan_thread_task(self):
+    def _scan_thread_task(self, scan_id=None):
         found_port = self.find_apera_meter()
-        QTimer.singleShot(0, lambda: self._finish_connect(found_port))
+        QTimer.singleShot(0, lambda: self._finish_connect(found_port, scan_id))
 
-    def _finish_connect(self, port):
+    def _finish_connect(self, port, scan_id=None):
+        if scan_id is not None and getattr(self, 'scan_id', None) != scan_id:
+            return
+        self.scan_id = None
         self.btn_connect.setEnabled(True)
         if not port or port == "No Ports Found":
             self.lbl_status.setText("Status: Auto-Detect Failed")
