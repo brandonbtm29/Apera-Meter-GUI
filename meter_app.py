@@ -862,7 +862,8 @@ class MeterController(QWidget):
             for r in range(self.table.rowCount()):
                 row_data = []
                 for c in range(self.table.columnCount()):
-                    val = self.table.item(r, c).text()
+                    item = self.table.item(r, c)
+                    val = item.text() if item else ""
                     try: row_data.append(float(val))
                     except ValueError: row_data.append(val)
                 data_ws.append(row_data)

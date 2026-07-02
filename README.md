@@ -23,14 +23,24 @@ All dependencies are listed in `requirements.txt`. You can install them via:
 pip install -r requirements.txt
 ```
 Dependencies include:
-* `customtkinter` (for the dark-mode modern GUI)
+* `PyQt6` & `pyqtdarktheme` (for the dark-mode modern GUI)
 * `pyserial` (for serial communication)
 * `matplotlib` (for live graph plotting)
 * `openpyxl` (for Excel exporting)
+* `pyinstaller` (for building a standalone executable)
 
 ## Usage
+
+### Running from Source
 Simply run the script or the provided batch file:
 ```bash
 python meter_app.py
 ```
 Or double-click `Launch_GUI.bat` on Windows.
+
+### Building a Standalone Executable
+You can build a standalone executable for your operating system using the provided build script:
+```bash
+python build_app.py
+```
+This will create a `dist/` directory containing the executable (`Apera_Meter_GUI.exe` on Windows, or `Apera_Meter_GUI.app` on macOS).
