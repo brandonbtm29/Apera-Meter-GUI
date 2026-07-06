@@ -922,13 +922,21 @@ class MeterApp(QMainWindow):
         self.tabs.addTab(self.meter2, "Meter 2")
         
         try:
-            if "app_x" in self.meter1.config and not self.meter1.config.get("app_maximized", False):
-                self.move(self.meter1.config["app_x"], self.meter1.config["app_y"])
-                self.resize(self.meter1.config["app_w"], self.meter1.config["app_h"])
-            if self.meter1.config.get("app_maximized", False):
-                self.showMaximized()
+            if "app_geometry" in self.meter1.config:
+                from PyQt6.QtCore import QByteArray
+                self.restoreGeometry(QByteArray.fromHex(self.meter1.config["app_geometry"].encode()))
+            
             if "app_tab" in self.meter1.config:
                 self.tabs.setCurrentIndex(self.meter1.config["app_tab"])
+                
+            widths1 = self.meter1.config.get(f"col_widths_{self.meter1.meter_id}")
+            if widths1:
+                for i, w in enumerate(widths1): self.meter1.table.setColumnWidth(i, w)
+            
+            widths2 = self.meter1.config.get(f"col_widths_{self.meter2.meter_id}")
+            if widths2:
+                for i, w in enumerate(widths2): self.meter2.table.setColumnWidth(i, w)
+        except Exception: pass
         except Exception: pass
 
     def get_used_ports(self):
@@ -949,13 +957,10 @@ class MeterApp(QMainWindow):
         self.meter2.disconnect_meter()
         
         try:
-            self.meter1.config["app_maximized"] = self.isMaximized()
-            if not self.isMaximized():
-                self.meter1.config["app_x"] = self.pos().x()
-                self.meter1.config["app_y"] = self.pos().y()
-                self.meter1.config["app_w"] = self.size().width()
-                self.meter1.config["app_h"] = self.size().height()
+            self.meter1.config["app_geometry"] = self.saveGeometry().toHex().data().decode()
             self.meter1.config["app_tab"] = self.tabs.currentIndex()
+            self.meter1.config[f"col_widths_{self.meter1.meter_id}"] = [self.meter1.table.columnWidth(i) for i in range(self.meter1.table.columnCount())]
+            self.meter1.config[f"col_widths_{self.meter2.meter_id}"] = [self.meter2.table.columnWidth(i) for i in range(self.meter2.table.columnCount())]
             self.meter1.save_config()
         except Exception: pass
         
