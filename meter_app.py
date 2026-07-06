@@ -920,6 +920,16 @@ class MeterApp(QMainWindow):
         
         self.tabs.addTab(self.meter1, "Meter 1")
         self.tabs.addTab(self.meter2, "Meter 2")
+        
+        try:
+            if "app_x" in self.meter1.config and not self.meter1.config.get("app_maximized", False):
+                self.move(self.meter1.config["app_x"], self.meter1.config["app_y"])
+                self.resize(self.meter1.config["app_w"], self.meter1.config["app_h"])
+            if self.meter1.config.get("app_maximized", False):
+                self.showMaximized()
+            if "app_tab" in self.meter1.config:
+                self.tabs.setCurrentIndex(self.meter1.config["app_tab"])
+        except Exception: pass
 
     def get_used_ports(self):
         used = []
@@ -937,6 +947,18 @@ class MeterApp(QMainWindow):
         
         self.meter1.disconnect_meter()
         self.meter2.disconnect_meter()
+        
+        try:
+            self.meter1.config["app_maximized"] = self.isMaximized()
+            if not self.isMaximized():
+                self.meter1.config["app_x"] = self.pos().x()
+                self.meter1.config["app_y"] = self.pos().y()
+                self.meter1.config["app_w"] = self.size().width()
+                self.meter1.config["app_h"] = self.size().height()
+            self.meter1.config["app_tab"] = self.tabs.currentIndex()
+            self.meter1.save_config()
+        except Exception: pass
+        
         event.accept()
 
 if __name__ == "__main__":
