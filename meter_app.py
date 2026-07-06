@@ -313,6 +313,9 @@ class MeterController(QWidget):
         right_scroll.setWidget(right_widget)
         right_scroll.setWidgetResizable(True)
         
+        left_scroll.setMinimumWidth(250)
+        right_scroll.setMinimumWidth(250)
+        
         # Add to main splitter
         self.main_splitter.addWidget(left_scroll)
         self.main_splitter.addWidget(mid_splitter)
@@ -945,7 +948,16 @@ class MeterApp(QMainWindow):
             widths2 = self.meter1.config.get(f"col_widths_{self.meter2.meter_id}")
             if widths2:
                 for i, w in enumerate(widths2): self.meter2.table.setColumnWidth(i, w)
-        except Exception: pass
+                
+            state1_main = self.meter1.config.get(f"main_splitter_{self.meter1.meter_id}")
+            if state1_main: self.meter1.main_splitter.restoreState(QByteArray.fromHex(state1_main.encode()))
+            state1_mid = self.meter1.config.get(f"mid_splitter_{self.meter1.meter_id}")
+            if state1_mid: self.meter1.mid_splitter.restoreState(QByteArray.fromHex(state1_mid.encode()))
+            
+            state2_main = self.meter1.config.get(f"main_splitter_{self.meter2.meter_id}")
+            if state2_main: self.meter2.main_splitter.restoreState(QByteArray.fromHex(state2_main.encode()))
+            state2_mid = self.meter1.config.get(f"mid_splitter_{self.meter2.meter_id}")
+            if state2_mid: self.meter2.mid_splitter.restoreState(QByteArray.fromHex(state2_mid.encode()))
         except Exception: pass
 
     def get_used_ports(self):
@@ -970,6 +982,12 @@ class MeterApp(QMainWindow):
             self.meter1.config["app_tab"] = self.tabs.currentIndex()
             self.meter1.config[f"col_widths_{self.meter1.meter_id}"] = [self.meter1.table.columnWidth(i) for i in range(self.meter1.table.columnCount())]
             self.meter1.config[f"col_widths_{self.meter2.meter_id}"] = [self.meter2.table.columnWidth(i) for i in range(self.meter2.table.columnCount())]
+            
+            self.meter1.config[f"main_splitter_{self.meter1.meter_id}"] = self.meter1.main_splitter.saveState().toHex().data().decode()
+            self.meter1.config[f"mid_splitter_{self.meter1.meter_id}"] = self.meter1.mid_splitter.saveState().toHex().data().decode()
+            self.meter1.config[f"main_splitter_{self.meter2.meter_id}"] = self.meter2.main_splitter.saveState().toHex().data().decode()
+            self.meter1.config[f"mid_splitter_{self.meter2.meter_id}"] = self.meter2.mid_splitter.saveState().toHex().data().decode()
+            
             self.meter1.save_config()
         except Exception: pass
         
