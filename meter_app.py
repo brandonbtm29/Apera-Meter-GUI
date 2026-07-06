@@ -562,6 +562,9 @@ class MeterController(QWidget):
             self.lbl_status.setText(f"Status: Connected to {port}")
             self.lbl_status.setStyleSheet("color: #2ECC71;")
             
+            self.config[f"default_com_port_{self.meter_id}"] = port
+            self.save_config()
+            
             self.ser.write(b"&OK#\r\n")
             QTimer.singleShot(500, self.sync_time)
             
