@@ -449,9 +449,10 @@ class MeterController(QWidget):
 
     def restart_app(self):
         import sys
-        import os
+        import subprocess
         self.app_controller.close()
-        os.execv(sys.executable, ['python'] + sys.argv)
+        subprocess.Popen([sys.executable] + sys.argv, close_fds=True)
+        QApplication.quit()
         
     def clear_log(self, init_file=False):
         self.table.setRowCount(0)
@@ -600,8 +601,17 @@ class MeterController(QWidget):
 
     def disconnect_meter(self):
         self.is_connected = False
-        if self.ser and self.ser.is_open:
-            self.ser.close()
+        
+        # Defer ser.close() to a background thread because PySerial close() can block
+        # on Windows if another thread is currently polling it.
+        def async_close(ser):
+            time.sleep(0.1) # Let the read loops exit first
+            if ser and ser.is_open:
+                try: ser.close()
+                except: pass
+                
+        threading.Thread(target=async_close, args=(self.ser,), daemon=True).start()
+        
         self.btn_connect.setText("🔌 Connect")
         self.btn_download.setEnabled(False)
         self.btn_sync.setEnabled(False)
