@@ -600,7 +600,6 @@ class MeterController(QWidget):
 
     def disconnect_meter(self):
         self.is_connected = False
-        time.sleep(0.5)
         if self.ser and self.ser.is_open:
             self.ser.close()
         self.btn_connect.setText("🔌 Connect")
