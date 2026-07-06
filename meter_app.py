@@ -416,11 +416,34 @@ class MeterController(QWidget):
         
         ka_chk = QCheckBox("Enable Keep-Alive (Ping every 2s)")
         ka_chk.setChecked(self.config.get(f"keep_alive_{self.meter_id}", True))
-        def toggle_ka(state):
-            self.config[f"keep_alive_{self.meter_id}"] = (state == Qt.CheckState.Checked.value)
+        
+        auto_sync_chk = QCheckBox("Auto-Sync Time on Connect")
+        auto_sync_chk.setChecked(self.config.get(f"auto_sync_{self.meter_id}", False))
+        
+        def save_and_close():
+            self.config[f"keep_alive_{self.meter_id}"] = ka_chk.isChecked()
+            self.config[f"auto_sync_{self.meter_id}"] = auto_sync_chk.isChecked()
             self.save_config()
-        ka_chk.stateChanged.connect(toggle_ka)
+            dlg.accept()
+            
         layout.addWidget(ka_chk)
+        layout.addWidget(auto_sync_chk)
+        
+        def wipe_backup():
+            reply = QMessageBox.question(dlg, "Confirm", "Are you sure you want to permanently delete the backup logs?",
+                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
+                self.init_backup_file()
+                QMessageBox.information(dlg, "Success", "Backup logs wiped successfully.")
+        
+        btn_wipe = QPushButton("🗑️ Clear Backup Logs")
+        btn_wipe.setStyleSheet("background-color: #e74c3c; color: white;")
+        btn_wipe.clicked.connect(wipe_backup)
+        layout.addWidget(btn_wipe)
+        
+        btn_close = QPushButton("Save & Close")
+        btn_close.clicked.connect(save_and_close)
+        layout.addWidget(btn_close)
         
         dlg.exec()
 
@@ -430,7 +453,7 @@ class MeterController(QWidget):
         self.app_controller.close()
         os.execv(sys.executable, ['python'] + sys.argv)
         
-    def clear_log(self, init_file=True):
+    def clear_log(self, init_file=False):
         self.table.setRowCount(0)
         self.received_timestamps.clear()
         self.plot_dates.clear()
