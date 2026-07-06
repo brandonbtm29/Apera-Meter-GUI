@@ -93,13 +93,18 @@ class MeterController(QWidget):
         self.columns = ("DateTime", "Duration (min)", "Mode", "Cond (uS/cm)", "Cond (mS/cm)", "Temp (°C)", "Raw Cond_ADC")
         
         self.init_ui()
-        self.init_backup_file()
         
+        has_backup = False
         if os.path.exists(self.emergency_backup_path):
             with open(self.emergency_backup_path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
                 if len(lines) > 1:
-                    self.recover_session()
+                    has_backup = True
+                    
+        if has_backup:
+            self.recover_session()
+        else:
+            self.init_backup_file()
         
         self.refresh_ports()
         target_com = self.config.get(f"default_com_port_{self.meter_id}", "Auto-Detect Apera Meter")
@@ -425,7 +430,7 @@ class MeterController(QWidget):
         self.app_controller.close()
         os.execv(sys.executable, ['python'] + sys.argv)
         
-    def clear_log(self):
+    def clear_log(self, init_file=True):
         self.table.setRowCount(0)
         self.received_timestamps.clear()
         self.plot_dates.clear()
@@ -434,11 +439,12 @@ class MeterController(QWidget):
         self.session_start_time = None
         self.last_auto_dump_time = time.time()
         
-        try:
-            with open(self.emergency_backup_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(self.columns)
-        except: pass
+        if init_file:
+            try:
+                with open(self.emergency_backup_path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(self.columns)
+            except: pass
         self.plot_data()
 
     def recover_session(self):
@@ -452,7 +458,7 @@ class MeterController(QWidget):
                 header = next(reader, None)
                 rows = list(reader)
                 
-            self.clear_log()
+            self.clear_log(init_file=False)
             
             self.table.setSortingEnabled(False)
             for row in rows:
