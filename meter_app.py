@@ -77,14 +77,23 @@ class MeterController(QWidget):
         self.signals.update_device_info.connect(self.set_device_info)
         
         self.config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
-        self.config = {
-            f"default_com_port_{meter_id}": "COM4" if meter_id == 1 else "Auto-Detect Apera Meter",
-            f"default_auto_dump_hrs_{meter_id}": 2.0,
-            f"default_save_location_{meter_id}": "",
-            f"meter_notes_{meter_id}": "",
-            f"keep_alive_{meter_id}": True
-        }
-        self.load_config()
+        
+        if self.app_controller and not hasattr(self.app_controller, 'shared_config'):
+            self.app_controller.shared_config = {}
+            if os.path.exists(self.config_path):
+                try:
+                    with open(self.config_path, "r") as f:
+                        self.app_controller.shared_config = json.load(f)
+                except: pass
+                
+        self.config = self.app_controller.shared_config if self.app_controller else {}
+        
+        # Set defaults
+        self.config.setdefault(f"default_com_port_{meter_id}", "COM4" if meter_id == 1 else "Auto-Detect Apera Meter")
+        self.config.setdefault(f"default_auto_dump_hrs_{meter_id}", 2.0)
+        self.config.setdefault(f"default_save_location_{meter_id}", "")
+        self.config.setdefault(f"meter_notes_{meter_id}", "")
+        self.config.setdefault(f"keep_alive_{meter_id}", True)
         
         docs = self.config.get(f"default_save_location_{meter_id}", "")
         if not docs or not os.path.isdir(docs):
@@ -333,11 +342,8 @@ class MeterController(QWidget):
         except Exception: pass
 
     def load_config(self):
-        if os.path.exists(self.config_path):
-            try:
-                with open(self.config_path, "r") as f:
-                    self.config.update(json.load(f))
-            except: pass
+        # We handle loading during initialization in the shared config logic now.
+        pass
 
     def save_config(self):
         try:
