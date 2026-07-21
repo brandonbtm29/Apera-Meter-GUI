@@ -94,6 +94,9 @@ class MeterController(QWidget):
         self.config.setdefault(f"default_save_location_{meter_id}", "")
         self.config.setdefault(f"meter_notes_{meter_id}", "")
         self.config.setdefault(f"keep_alive_{meter_id}", True)
+        self.config.setdefault(f"auto_time_{meter_id}", True)
+        self.config.setdefault(f"auto_cond_{meter_id}", True)
+        self.config.setdefault(f"auto_temp_{meter_id}", True)
         
         docs = self.config.get(f"default_save_location_{meter_id}", "")
         if not docs or not os.path.isdir(docs):
@@ -166,18 +169,18 @@ class MeterController(QWidget):
         left_layout.addWidget(lbl_axis)
         
         self.auto_time_chk = QCheckBox("Auto Time")
-        self.auto_time_chk.setChecked(True)
-        self.auto_time_chk.stateChanged.connect(self.plot_data)
+        self.auto_time_chk.setChecked(self.config.get(f"auto_time_{self.meter_id}", True))
+        self.auto_time_chk.stateChanged.connect(self._auto_chk_changed)
         left_layout.addWidget(self.auto_time_chk)
         
         self.auto_cond_chk = QCheckBox("Auto Cond")
-        self.auto_cond_chk.setChecked(True)
-        self.auto_cond_chk.stateChanged.connect(self.plot_data)
+        self.auto_cond_chk.setChecked(self.config.get(f"auto_cond_{self.meter_id}", True))
+        self.auto_cond_chk.stateChanged.connect(self._auto_chk_changed)
         left_layout.addWidget(self.auto_cond_chk)
         
         self.auto_temp_chk = QCheckBox("Auto Temp")
-        self.auto_temp_chk.setChecked(True)
-        self.auto_temp_chk.stateChanged.connect(self.plot_data)
+        self.auto_temp_chk.setChecked(self.config.get(f"auto_temp_{self.meter_id}", True))
+        self.auto_temp_chk.stateChanged.connect(self._auto_chk_changed)
         left_layout.addWidget(self.auto_temp_chk)
         
         form_layout = QFormLayout()
@@ -377,6 +380,15 @@ class MeterController(QWidget):
             self.ax.set_title(f"Live (Not Recording): Conductivity (Meter {self.meter_id})")
         self.canvas.draw_idle()
 
+    def _auto_chk_changed(self):
+        try:
+            self.config[f"auto_time_{self.meter_id}"] = self.auto_time_chk.isChecked()
+            self.config[f"auto_cond_{self.meter_id}"] = self.auto_cond_chk.isChecked()
+            self.config[f"auto_temp_{self.meter_id}"] = self.auto_temp_chk.isChecked()
+            self.save_config()
+        except: pass
+        self.plot_data()
+
     def apply_limits(self):
         try:
             self.config[f"time_win_{self.meter_id}"] = self.ent_time_win.text()
@@ -385,12 +397,12 @@ class MeterController(QWidget):
             self.config[f"temp_min_{self.meter_id}"] = self.ent_temp_min.text()
             self.config[f"temp_max_{self.meter_id}"] = self.ent_temp_max.text()
             self.config[f"xaxis_{self.meter_id}"] = self.xaxis_combo.currentText()
+            self.config[f"auto_time_{self.meter_id}"] = self.auto_time_chk.isChecked()
+            self.config[f"auto_cond_{self.meter_id}"] = self.auto_cond_chk.isChecked()
+            self.config[f"auto_temp_{self.meter_id}"] = self.auto_temp_chk.isChecked()
             self.save_config()
         except Exception: pass
         
-        self.auto_time_chk.setChecked(False)
-        self.auto_cond_chk.setChecked(False)
-        self.auto_temp_chk.setChecked(False)
         self.plot_data()
 
     def save_graph(self):
