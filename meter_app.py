@@ -16,6 +16,7 @@ import csv
 import json
 import openpyxl
 from openpyxl.styles import Font, Alignment
+import pandas as pd
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -50,6 +51,47 @@ class WorkerSignals(QObject):
     update_tree = pyqtSignal(object, tuple)
     update_status = pyqtSignal(str, str)
     update_device_info = pyqtSignal(str, str)
+
+class FilenameBuilderDialog(QDialog):
+    def __init__(self, parent=None, initial_template="", tokens=None):
+        super().__init__(parent)
+        self.setWindowTitle("Filename Builder")
+        self.setMinimumWidth(500)
+        self.tokens = tokens or []
+        
+        layout = QVBoxLayout(self)
+        
+        layout.addWidget(QLabel("Filename Template:"))
+        self.ent_template = QLineEdit(initial_template)
+        layout.addWidget(self.ent_template)
+        
+        layout.addWidget(QLabel("Click a token to insert it at the cursor position:"))
+        
+        grid = QGridLayout()
+        row = 0; col = 0
+        for tok in self.tokens:
+            btn = QPushButton(f"<{tok}>")
+            btn.clicked.connect(lambda checked, t=tok: self.insert_token(t))
+            grid.addWidget(btn, row, col)
+            col += 1
+            if col > 2:
+                col = 0
+                row += 1
+                
+        layout.addLayout(grid)
+        
+        btn_layout = QHBoxLayout()
+        btn_ok = QPushButton("OK")
+        btn_cancel = QPushButton("Cancel")
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_cancel)
+        layout.addLayout(btn_layout)
+        
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel.clicked.connect(self.reject)
+        
+    def insert_token(self, tok):
+        self.ent_template.insert(f"<{tok}>")
 
 class MeterController(QWidget):
     def __init__(self, meter_id=1, parent_app=None):
@@ -97,6 +139,9 @@ class MeterController(QWidget):
         self.config.setdefault(f"auto_time_{meter_id}", True)
         self.config.setdefault(f"auto_cond_{meter_id}", True)
         self.config.setdefault(f"auto_temp_{meter_id}", True)
+        self.config.setdefault(f"autosave_mode_{meter_id}", "Off")
+        self.config.setdefault(f"autosave_min_{meter_id}", "5.0")
+        self.config.setdefault(f"save_template_{meter_id}", f"Meter_<{meter_id}>_<Date>")
         
         docs = self.config.get(f"default_save_location_{meter_id}", "")
         if not docs or not os.path.isdir(docs):
@@ -159,6 +204,36 @@ class MeterController(QWidget):
         left_layout.addWidget(self.auto_dump_chk)
         self.auto_dump_entry = QLineEdit(str(self.config.get(f"default_auto_dump_hrs_{self.meter_id}", 2.0)))
         left_layout.addWidget(self.auto_dump_entry)
+        
+        # --- Auto-Save & Filename ---
+        gb_save = QGroupBox("Auto-Save & Filename")
+        l_save = QGridLayout()
+        gb_save.setLayout(l_save)
+        
+        l_save.addWidget(QLabel("Filename Template:"), 0, 0)
+        self.ent_save_template = QLineEdit(self.config.get(f"save_template_{self.meter_id}", ""))
+        l_save.addWidget(self.ent_save_template, 0, 1)
+        btn_edit_template = QPushButton("Edit")
+        btn_edit_template.clicked.connect(self.open_filename_builder)
+        l_save.addWidget(btn_edit_template, 0, 2)
+        
+        l_save.addWidget(QLabel("Auto-Save Mode:"), 1, 0)
+        self.combo_autosave = QComboBox()
+        self.combo_autosave.addItems(["Off", "On Auto-Stop", "Every X Minutes"])
+        self.combo_autosave.setCurrentText(self.config.get(f"autosave_mode_{self.meter_id}", "Off"))
+        l_save.addWidget(self.combo_autosave, 1, 1, 1, 2)
+        
+        l_save.addWidget(QLabel("Auto-Save Interval (min):"), 2, 0)
+        self.ent_autosave_min = QLineEdit(self.config.get(f"autosave_min_{self.meter_id}", "5.0"))
+        l_save.addWidget(self.ent_autosave_min, 2, 1, 1, 2)
+        
+        self.combo_autosave.currentIndexChanged.connect(self.toggle_autosave_interval)
+        self.combo_autosave.currentIndexChanged.connect(self._save_autosave_config)
+        self.ent_autosave_min.textChanged.connect(self._save_autosave_config)
+        self.ent_save_template.textChanged.connect(self._save_autosave_config)
+        self.toggle_autosave_interval()
+        
+        left_layout.addWidget(gb_save)
         
         line1 = QFrame()
         line1.setFrameShape(QFrame.Shape.HLine)
@@ -298,7 +373,7 @@ class MeterController(QWidget):
         
         self.btn_export = QPushButton("💾 Save Log to Excel")
         self.btn_export.setStyleSheet("background-color: #27ae60; color: white;")
-        self.btn_export.clicked.connect(self.export_data)
+        self.btn_export.clicked.connect(lambda: self.save_excel(auto=False))
         right_layout.addWidget(self.btn_export)
         
         self.btn_save_graph = QPushButton("🖼️ Save Graph PNG")
@@ -367,16 +442,47 @@ class MeterController(QWidget):
         self.port_combo.clear()
         self.port_combo.addItems(ports)
 
+    def _save_autosave_config(self):
+        self.config[f"autosave_mode_{self.meter_id}"] = self.combo_autosave.currentText()
+        self.config[f"autosave_min_{self.meter_id}"] = self.ent_autosave_min.text()
+        self.config[f"save_template_{self.meter_id}"] = self.ent_save_template.text()
+        self.save_config()
+
+    def toggle_autosave_interval(self):
+        self.ent_autosave_min.setEnabled(self.combo_autosave.currentText() == "Every X Minutes")
+
+    def open_filename_builder(self):
+        tokens = ["Meter ID", "Date", "Time"]
+        dialog = FilenameBuilderDialog(self, self.ent_save_template.text(), tokens)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.ent_save_template.setText(dialog.ent_template.text())
+
+    def get_resolved_string(self, template_str):
+        if not template_str: return ""
+        s = template_str
+        s = s.replace("<Meter ID>", str(self.meter_id))
+        s = s.replace("<Date>", datetime.datetime.now().strftime("%Y-%m-%d"))
+        s = s.replace("<Time>", datetime.datetime.now().strftime("%H%M%S"))
+        return s
+
     def toggle_record(self):
         if not self.is_recording:
             self.is_recording = True
-            self.btn_record.setText("⏹️ Stop Recording")
+            self.session_start_time = None
+            self.last_autosave_min = 0.0
+            self.btn_record.setText("⏸ Pause Recording")
             self.btn_record.setStyleSheet("background-color: #e74c3c; color: white;")
-            self.ax.set_title(f"Recording: Conductivity (Meter {self.meter_id})")
+            self.lbl_status.setText("Status: Recording...")
+            self.unsaved_changes = True
         else:
             self.is_recording = False
-            self.btn_record.setText("▶️ Start Recording")
+            self.btn_record.setText("⏺ Start Recording")
             self.btn_record.setStyleSheet("background-color: #2ecc71; color: white;")
+            self.lbl_status.setText("Status: Paused")
+            
+            if self.combo_autosave.currentText() == "On Auto-Stop":
+                self.save_excel(auto=True)
+                self.txt_notes.append("[Auto-Save] Data saved to directory automatically upon pause.")
             self.ax.set_title(f"Live (Not Recording): Conductivity (Meter {self.meter_id})")
         self.canvas.draw_idle()
 
@@ -821,10 +927,25 @@ class MeterController(QWidget):
             import matplotlib.ticker as ticker
             
             is_duration = self.xaxis_combo.currentText() == "X-Axis: Duration (min)"
+            
+            if not getattr(self, 'session_start_time', None):
+                self.session_start_time = self.plot_dates[0]
+                
+            durations = [(d - self.session_start_time).total_seconds() / 60.0 for d in self.plot_dates]
+            
+            if self.is_recording and self.combo_autosave.currentText() == "Every X Minutes":
+                try: autosave_interval = float(self.ent_autosave_min.text())
+                except: autosave_interval = 5.0
+                
+                if len(durations) > 0:
+                    elapsed_min = durations[-1]
+                    last_autosave = getattr(self, 'last_autosave_min', 0.0)
+                    if (elapsed_min - last_autosave) >= autosave_interval:
+                        self.save_excel(auto=True)
+                        self.last_autosave_min = elapsed_min
+
             if is_duration:
-                if not getattr(self, 'session_start_time', None):
-                    self.session_start_time = self.plot_dates[0]
-                x_data = [(d - self.session_start_time).total_seconds() / 60.0 for d in self.plot_dates]
+                x_data = durations
                 self.ax.set_xlabel("Duration (min)", color='white')
             else:
                 x_data = self.plot_dates
@@ -888,18 +1009,41 @@ class MeterController(QWidget):
             self.lbl_status.setText("Status: Downloading Memory...")
             self.ser.write(b"&WA#\r\n")
 
-    def export_data(self):
+    def save_excel(self, auto=False):
         if self.table.rowCount() == 0:
-            QMessageBox.information(self, "Export", "No data to export.")
+            if not auto: QMessageBox.information(self, "Export", "No data to export.")
             return
             
-        dt_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        initial_file = f"Meter{self.meter_id}_{dt_str}.xlsx"
+        filename = self.get_resolved_string(self.ent_save_template.text())
+        if not filename:
+            filename = f"Meter{self.meter_id}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        if not filename.endswith(".xlsx"): filename += ".xlsx"
+        filename = filename.replace(' ', '_')
         
-        filepath, _ = QFileDialog.getSaveFileName(self, "Export Excel", initial_file, "Excel files (*.xlsx);;All files (*.*)")
-        if not filepath: return
+        if auto:
+            docs = self.config.get(f"default_save_location_{self.meter_id}", "")
+            if not docs or not os.path.isdir(docs): docs = os.path.expanduser("~/Documents")
+            filepath = os.path.join(docs, filename)
+        else:
+            docs = self.config.get(f"default_save_location_{self.meter_id}", "")
+            if not docs or not os.path.isdir(docs): docs = os.path.expanduser("~/Documents")
+            initial_file = os.path.join(docs, filename)
+            filepath, _ = QFileDialog.getSaveFileName(self, "Export Excel", initial_file, "Excel files (*.xlsx);;All files (*.*)")
+            if not filepath: return
         
         try:
+            # Extract data from table
+            data = []
+            for row in range(self.table.rowCount()):
+                row_data = []
+                for col in range(self.table.columnCount()):
+                    item = self.table.item(row, col)
+                    row_data.append(item.text() if item else "")
+                data.append(row_data)
+            
+            df = pd.DataFrame(data, columns=self.columns)
+            
+            # Write to excel with documentation sheet using openpyxl directly
             wb = openpyxl.Workbook()
             doc_ws = wb.active
             doc_ws.title = "Documentation"
@@ -917,19 +1061,6 @@ class MeterController(QWidget):
             doc_ws.column_dimensions["A"].width = 25
             doc_ws.column_dimensions["B"].width = 35
             
-            data_ws = wb.create_sheet("Data")
-            data_ws.append(self.columns)
-            for cell in data_ws[1]: cell.font = Font(bold=True)
-            
-            for r in range(self.table.rowCount()):
-                row_data = []
-                for c in range(self.table.columnCount()):
-                    item = self.table.item(r, c)
-                    val = item.text() if item else ""
-                    try: row_data.append(float(val))
-                    except ValueError: row_data.append(val)
-                data_ws.append(row_data)
-                
             wb.save(filepath)
             self.lbl_status.setText(f"Status: Exported to Excel!")
             self.unsaved_changes = False
