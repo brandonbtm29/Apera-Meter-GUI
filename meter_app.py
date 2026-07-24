@@ -721,7 +721,13 @@ class MeterController(QWidget):
             
             self.table.setSortingEnabled(False)
             for row in rows:
-                if len(row) >= 6:
+                if len(row) == 6:
+                    dur_min = "0.00"
+                    try: dur_min = f"{float(row[1]) * 60:.2f}"
+                    except: pass
+                    row = [row[0], dur_min, "Cond", row[2], row[3], row[4], row[5]]
+                    
+                if len(row) >= 7:
                     self.received_timestamps.add(row[0])
                     r = self.table.rowCount()
                     self.table.insertRow(r)
@@ -971,14 +977,24 @@ class MeterController(QWidget):
             self.signals.update_device_info.emit("Model", hex_str)
 
     def log_point_ui(self, dt, row_data):
+        if not getattr(self, 'session_start_time', None):
+            self.session_start_time = dt
+            
+        duration_min = (dt - self.session_start_time).total_seconds() / 60.0
+        
+        if len(row_data) == 6:
+            full_row = (row_data[0], f"{duration_min:.2f}", row_data[1], row_data[2], row_data[3], row_data[4], row_data[5])
+        else:
+            full_row = row_data
+            
         self.plot_dates.append(dt)
-        self.plot_conds.append(float(row_data[2]) if row_data[2] else 0.0)
-        self.plot_temps.append(float(row_data[4]) if row_data[4] else 0.0)
+        self.plot_conds.append(float(full_row[3]) if full_row[3] else 0.0)
+        self.plot_temps.append(float(full_row[5]) if full_row[5] else 0.0)
         
         self.table.setSortingEnabled(False)
         row_idx = self.table.rowCount()
         self.table.insertRow(row_idx)
-        for col, text in enumerate(row_data):
+        for col, text in enumerate(full_row):
             self.table.setItem(row_idx, col, NumericTableWidgetItem(str(text)))
         self.table.setSortingEnabled(True)
         self.table.scrollToBottom()
@@ -987,7 +1003,7 @@ class MeterController(QWidget):
         try:
             with open(self.emergency_backup_path, "a", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow(row_data)
+                writer.writerow(full_row)
         except: pass
         
         self.schedule_plot()
