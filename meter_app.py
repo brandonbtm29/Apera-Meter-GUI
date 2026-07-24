@@ -139,6 +139,7 @@ class MeterController(QWidget):
         self.config.setdefault(f"auto_time_{meter_id}", True)
         self.config.setdefault(f"auto_cond_{meter_id}", True)
         self.config.setdefault(f"auto_temp_{meter_id}", True)
+        self.config.setdefault(f"auto_dump_enabled_{meter_id}", False)
         self.config.setdefault(f"autosave_mode_{meter_id}", "Off")
         self.config.setdefault(f"autosave_min_{meter_id}", "5.0")
         self.config.setdefault(f"save_template_{meter_id}", f"Meter_<{meter_id}>_<Date>")
@@ -201,8 +202,11 @@ class MeterController(QWidget):
         left_layout.addWidget(self.btn_record)
         
         self.auto_dump_chk = QCheckBox("Auto-Dump Memory (hrs):")
+        self.auto_dump_chk.setChecked(self.config.get(f"auto_dump_enabled_{self.meter_id}", False))
+        self.auto_dump_chk.stateChanged.connect(self._save_auto_dump_config)
         left_layout.addWidget(self.auto_dump_chk)
         self.auto_dump_entry = QLineEdit(str(self.config.get(f"default_auto_dump_hrs_{self.meter_id}", 2.0)))
+        self.auto_dump_entry.textChanged.connect(self._save_auto_dump_config)
         left_layout.addWidget(self.auto_dump_entry)
         
         # --- Auto-Save & Filename ---
@@ -441,6 +445,11 @@ class MeterController(QWidget):
         ports = self.get_ports()
         self.port_combo.clear()
         self.port_combo.addItems(ports)
+
+    def _save_auto_dump_config(self):
+        self.config[f"auto_dump_enabled_{self.meter_id}"] = self.auto_dump_chk.isChecked()
+        self.config[f"default_auto_dump_hrs_{self.meter_id}"] = self.auto_dump_entry.text()
+        self.save_config()
 
     def _save_autosave_config(self):
         self.config[f"autosave_mode_{self.meter_id}"] = self.combo_autosave.currentText()
