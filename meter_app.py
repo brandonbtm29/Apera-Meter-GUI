@@ -53,45 +53,114 @@ class WorkerSignals(QObject):
     update_device_info = pyqtSignal(str, str)
 
 class FilenameBuilderDialog(QDialog):
-    def __init__(self, parent=None, initial_template="", tokens=None):
+    def __init__(self, parent=None, initial_template="", tokens_data=None):
         super().__init__(parent)
-        self.setWindowTitle("Filename Builder")
-        self.setMinimumWidth(500)
-        self.tokens = tokens or []
+        self.setWindowTitle("Filename Builder & Custom Tokens")
+        self.setMinimumWidth(600)
         
-        layout = QVBoxLayout(self)
+        self.tokens_data = tokens_data or []
         
-        layout.addWidget(QLabel("Filename Template:"))
+        main_layout = QVBoxLayout(self)
+        
+        gb_tokens = QGroupBox("Metadata Tokens")
+        self.layout_tokens = QVBoxLayout(gb_tokens)
+        self.token_rows = []
+        self.grid_buttons = QGridLayout()
+        
+        btn_add_token = QPushButton("+ Add Custom Token")
+        btn_add_token.clicked.connect(lambda: self.add_token_row("", ""))
+        self.layout_tokens.addWidget(btn_add_token)
+        
+        for t in self.tokens_data:
+            self.add_token_row(t.get("name", ""), t.get("value", ""))
+            
+        main_layout.addWidget(gb_tokens)
+        
+        gb_temp = QGroupBox("Filename Template")
+        l_temp = QVBoxLayout(gb_temp)
+        l_temp.addWidget(QLabel("Click a token below to insert it at the cursor position:"))
         self.ent_template = QLineEdit(initial_template)
-        layout.addWidget(self.ent_template)
+        l_temp.addWidget(self.ent_template)
         
-        layout.addWidget(QLabel("Click a token to insert it at the cursor position:"))
-        
-        grid = QGridLayout()
-        row = 0; col = 0
-        for tok in self.tokens:
-            btn = QPushButton(f"<{tok}>")
-            btn.clicked.connect(lambda checked, t=tok: self.insert_token(t))
-            grid.addWidget(btn, row, col)
-            col += 1
-            if col > 2:
-                col = 0
-                row += 1
-                
-        layout.addLayout(grid)
+        l_temp.addLayout(self.grid_buttons)
+        self.refresh_token_buttons()
+        main_layout.addWidget(gb_temp)
         
         btn_layout = QHBoxLayout()
         btn_ok = QPushButton("OK")
         btn_cancel = QPushButton("Cancel")
         btn_layout.addWidget(btn_ok)
         btn_layout.addWidget(btn_cancel)
-        layout.addLayout(btn_layout)
+        main_layout.addLayout(btn_layout)
         
         btn_ok.clicked.connect(self.accept)
         btn_cancel.clicked.connect(self.reject)
         
-    def insert_token(self, tok):
-        self.ent_template.insert(f"<{tok}>")
+    def add_token_row(self, name, value):
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        
+        ent_name = QLineEdit(name)
+        ent_name.setPlaceholderText("Token Name")
+        ent_name.textChanged.connect(self.refresh_token_buttons)
+        ent_value = QLineEdit(value)
+        ent_value.setPlaceholderText("Value")
+        
+        btn_remove = QPushButton("X")
+        btn_remove.setFixedWidth(30)
+        btn_remove.setStyleSheet("background-color: #e74c3c; color: white;")
+        
+        row_layout.addWidget(ent_name)
+        row_layout.addWidget(ent_value)
+        row_layout.addWidget(btn_remove)
+        
+        idx = self.layout_tokens.count() - 1
+        self.layout_tokens.insertWidget(idx, row_widget)
+        
+        row_data = (row_widget, ent_name, ent_value)
+        self.token_rows.append(row_data)
+        
+        btn_remove.clicked.connect(lambda: self.remove_token_row(row_data))
+        self.refresh_token_buttons()
+        
+    def remove_token_row(self, row_data):
+        row_widget, ent_name, ent_value = row_data
+        if row_data in self.token_rows:
+            self.token_rows.remove(row_data)
+        self.layout_tokens.removeWidget(row_widget)
+        row_widget.deleteLater()
+        self.refresh_token_buttons()
+        
+    def refresh_token_buttons(self):
+        while self.grid_buttons.count():
+            item = self.grid_buttons.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+                
+        tokens = ["Meter ID", "Date", "Time"]
+        for _, ent_name, _ in self.token_rows:
+            n = ent_name.text().strip()
+            if n and n not in tokens: tokens.append(n)
+            
+        row = 0; col = 0
+        for tok in tokens:
+            btn = QPushButton(f"<{tok}>")
+            btn.clicked.connect(lambda checked, t=tok: self.ent_template.insert(f"<{t}>"))
+            self.grid_buttons.addWidget(btn, row, col)
+            col += 1
+            if col > 3:
+                col = 0
+                row += 1
+
+    def get_token_data(self):
+        data = []
+        for _, ent_name, ent_value in self.token_rows:
+            data.append({
+                "name": ent_name.text().strip(),
+                "value": ent_value.text().strip()
+            })
+        return data
 
 class MeterController(QWidget):
     def __init__(self, meter_id=1, parent_app=None):
@@ -463,10 +532,19 @@ class MeterController(QWidget):
         self.ent_autosave_min.setEnabled(self.combo_autosave.currentText() == "Every X Minutes")
 
     def open_filename_builder(self):
-        tokens = ["Meter ID", "Date", "Time"]
-        dialog = FilenameBuilderDialog(self, self.ent_save_template.text(), tokens)
+        default_tokens = [
+            {"name": "Column Name", "value": ""},
+            {"name": "Material", "value": ""},
+            {"name": "Flow rate", "value": ""},
+            {"name": "Bed length", "value": ""},
+            {"name": "Run #", "value": ""}
+        ]
+        tokens_data = self.config.get(f"meter_tokens_{self.meter_id}", default_tokens)
+        dialog = FilenameBuilderDialog(self, self.ent_save_template.text(), tokens_data)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.ent_save_template.setText(dialog.ent_template.text())
+            self.config[f"meter_tokens_{self.meter_id}"] = dialog.get_token_data()
+            self.save_config()
 
     def get_resolved_string(self, template_str):
         if not template_str: return ""
@@ -474,6 +552,14 @@ class MeterController(QWidget):
         s = s.replace("<Meter ID>", str(self.meter_id))
         s = s.replace("<Date>", datetime.datetime.now().strftime("%Y-%m-%d"))
         s = s.replace("<Time>", datetime.datetime.now().strftime("%H%M%S"))
+        
+        custom_tokens = self.config.get(f"meter_tokens_{self.meter_id}", [])
+        for t in custom_tokens:
+            name = t.get("name", "")
+            value = t.get("value", "")
+            if name:
+                s = s.replace(f"<{name}>", value)
+                
         return s
 
     def toggle_record(self):
