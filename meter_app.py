@@ -1315,7 +1315,22 @@ class MeterApp(QMainWindow):
         event.accept()
 
 if __name__ == "__main__":
+    import ctypes
+    import sys
+    import os
+    from PyQt6.QtGui import QIcon
+    try:
+        myappid = 'apera.conductivity.meter.gui'
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+    except Exception:
+        pass
+
     app = QApplication(sys.argv)
+    
+    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Conductivity meter.ico")
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
+        
     app.setStyleSheet(qdarktheme.load_stylesheet("dark"))
     
     window = MeterApp()
