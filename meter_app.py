@@ -180,6 +180,39 @@ class MeterController(QWidget):
     def init_ui(self):
         main_layout = QVBoxLayout(self)
         
+        self.top_btn_layout = QHBoxLayout()
+        main_layout.addLayout(self.top_btn_layout)
+        self.btn_sync = QPushButton("⏱️ Sync Meter Time")
+        self.btn_sync.setEnabled(False)
+        self.btn_sync.clicked.connect(self.sync_time)
+        self.top_btn_layout.addWidget(self.btn_sync)
+        
+        self.btn_download = QPushButton("📥 Download Raw Memory")
+        self.btn_download.setEnabled(False)
+        self.btn_download.clicked.connect(self.download_memory)
+        self.top_btn_layout.addWidget(self.btn_download)
+        
+        self.btn_export = QPushButton("💾 Save Log to Excel")
+        self.btn_export.setStyleSheet("background-color: #27ae60; color: white;")
+        self.btn_export.clicked.connect(lambda: self.save_excel(auto=False))
+        self.top_btn_layout.addWidget(self.btn_export)
+        
+        self.btn_save_graph = QPushButton("🖼️ Save Graph PNG")
+        self.btn_save_graph.clicked.connect(self.save_graph)
+        self.top_btn_layout.addWidget(self.btn_save_graph)
+        
+        self.btn_recover = QPushButton("♻️ Recover Session")
+        self.btn_recover.clicked.connect(self.recover_session)
+        self.top_btn_layout.addWidget(self.btn_recover)
+        
+        self.btn_clear = QPushButton("🗑️ Clear Data")
+        self.btn_clear.setStyleSheet("background-color: #c0392b; color: white;")
+        self.btn_clear.clicked.connect(self.clear_log)
+        self.top_btn_layout.addWidget(self.btn_clear)
+        
+        self.top_btn_layout.addStretch()
+
+        
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         main_layout.addWidget(self.main_splitter)
         
@@ -209,35 +242,7 @@ class MeterController(QWidget):
         self.auto_dump_entry.textChanged.connect(self._save_auto_dump_config)
         left_layout.addWidget(self.auto_dump_entry)
         
-        # --- Auto-Save & Filename ---
-        gb_save = QGroupBox("Auto-Save & Filename")
-        l_save = QGridLayout()
-        gb_save.setLayout(l_save)
-        
-        l_save.addWidget(QLabel("Filename Template:"), 0, 0)
-        self.ent_save_template = QLineEdit(self.config.get(f"save_template_{self.meter_id}", ""))
-        l_save.addWidget(self.ent_save_template, 0, 1)
-        btn_edit_template = QPushButton("Edit")
-        btn_edit_template.clicked.connect(self.open_filename_builder)
-        l_save.addWidget(btn_edit_template, 0, 2)
-        
-        l_save.addWidget(QLabel("Auto-Save Mode:"), 1, 0)
-        self.combo_autosave = QComboBox()
-        self.combo_autosave.addItems(["Off", "On Auto-Stop", "Every X Minutes"])
-        self.combo_autosave.setCurrentText(self.config.get(f"autosave_mode_{self.meter_id}", "Off"))
-        l_save.addWidget(self.combo_autosave, 1, 1, 1, 2)
-        
-        l_save.addWidget(QLabel("Auto-Save Interval (min):"), 2, 0)
-        self.ent_autosave_min = QLineEdit(self.config.get(f"autosave_min_{self.meter_id}", "5.0"))
-        l_save.addWidget(self.ent_autosave_min, 2, 1, 1, 2)
-        
-        self.combo_autosave.currentIndexChanged.connect(self.toggle_autosave_interval)
-        self.combo_autosave.currentIndexChanged.connect(self._save_autosave_config)
-        self.ent_autosave_min.textChanged.connect(self._save_autosave_config)
-        self.ent_save_template.textChanged.connect(self._save_autosave_config)
-        self.toggle_autosave_interval()
-        
-        left_layout.addWidget(gb_save)
+
         
         line1 = QFrame()
         line1.setFrameShape(QFrame.Shape.HLine)
@@ -339,6 +344,36 @@ class MeterController(QWidget):
         self.btn_connect = QPushButton("🔌 Connect")
         self.btn_connect.clicked.connect(self.toggle_connection)
         right_layout.addWidget(self.btn_connect)
+
+        # --- Auto-Save & Filename ---
+        gb_save = QGroupBox("Auto-Save & Filename")
+        l_save = QGridLayout()
+        gb_save.setLayout(l_save)
+        
+        l_save.addWidget(QLabel("Filename Template:"), 0, 0)
+        self.ent_save_template = QLineEdit(self.config.get(f"save_template_{self.meter_id}", ""))
+        l_save.addWidget(self.ent_save_template, 0, 1)
+        btn_edit_template = QPushButton("Edit")
+        btn_edit_template.clicked.connect(self.open_filename_builder)
+        l_save.addWidget(btn_edit_template, 0, 2)
+        
+        l_save.addWidget(QLabel("Auto-Save Mode:"), 1, 0)
+        self.combo_autosave = QComboBox()
+        self.combo_autosave.addItems(["Off", "On Auto-Stop", "Every X Minutes"])
+        self.combo_autosave.setCurrentText(self.config.get(f"autosave_mode_{self.meter_id}", "Off"))
+        l_save.addWidget(self.combo_autosave, 1, 1, 1, 2)
+        
+        l_save.addWidget(QLabel("Auto-Save Interval (min):"), 2, 0)
+        self.ent_autosave_min = QLineEdit(self.config.get(f"autosave_min_{self.meter_id}", "5.0"))
+        l_save.addWidget(self.ent_autosave_min, 2, 1, 1, 2)
+        
+        self.combo_autosave.currentIndexChanged.connect(self.toggle_autosave_interval)
+        self.combo_autosave.currentIndexChanged.connect(self._save_autosave_config)
+        self.ent_autosave_min.textChanged.connect(self._save_autosave_config)
+        self.ent_save_template.textChanged.connect(self._save_autosave_config)
+        self.toggle_autosave_interval()
+        
+        right_layout.addWidget(gb_save)
         
         self.lbl_status = QLabel("Status: Disconnected")
         self.lbl_status.setStyleSheet("color: gray;")
@@ -361,42 +396,7 @@ class MeterController(QWidget):
         self.txt_notes.textChanged.connect(self.save_notes)
         right_layout.addWidget(self.txt_notes)
         
-        line4 = QFrame()
-        line4.setFrameShape(QFrame.Shape.HLine)
-        right_layout.addWidget(line4)
-        
-        self.btn_sync = QPushButton("⏱️ Sync Meter Time")
-        self.btn_sync.setEnabled(False)
-        self.btn_sync.clicked.connect(self.sync_time)
-        right_layout.addWidget(self.btn_sync)
-        
-        self.btn_download = QPushButton("📥 Download Raw Memory")
-        self.btn_download.setEnabled(False)
-        self.btn_download.clicked.connect(self.download_memory)
-        right_layout.addWidget(self.btn_download)
-        
-        self.btn_export = QPushButton("💾 Save Log to Excel")
-        self.btn_export.setStyleSheet("background-color: #27ae60; color: white;")
-        self.btn_export.clicked.connect(lambda: self.save_excel(auto=False))
-        right_layout.addWidget(self.btn_export)
-        
-        self.btn_save_graph = QPushButton("🖼️ Save Graph PNG")
-        self.btn_save_graph.clicked.connect(self.save_graph)
-        right_layout.addWidget(self.btn_save_graph)
-        
-        self.btn_recover = QPushButton("♻️ Recover Session")
-        self.btn_recover.clicked.connect(self.recover_session)
-        right_layout.addWidget(self.btn_recover)
-        
-        self.btn_clear = QPushButton("🗑️ Clear Data")
-        self.btn_clear.setStyleSheet("background-color: #c0392b; color: white;")
-        self.btn_clear.clicked.connect(self.clear_log)
-        right_layout.addWidget(self.btn_clear)
-        
-        self.btn_restart = QPushButton("🔁 Restart Application")
-        self.btn_restart.setStyleSheet("background-color: #8e44ad; color: white;")
-        self.btn_restart.clicked.connect(self.restart_app)
-        right_layout.addWidget(self.btn_restart)
+
         
         right_layout.addStretch()
         
@@ -414,6 +414,8 @@ class MeterController(QWidget):
         self.main_splitter.setStretchFactor(0, 1)
         self.main_splitter.setStretchFactor(1, 3)
         self.main_splitter.setStretchFactor(2, 1)
+        
+        self.update_button_styles(self.config.get("button_style", "Icon + Text"))
 
     def init_backup_file(self):
         try:
@@ -583,13 +585,24 @@ class MeterController(QWidget):
         
         dlg.exec()
 
-    def restart_app(self):
-        import sys
-        import subprocess
-        self.app_controller.close()
-        subprocess.Popen([sys.executable] + sys.argv, close_fds=True)
-        QApplication.quit()
+
         
+    def update_button_styles(self, style):
+        if style == "Icon Only":
+            self.btn_sync.setText("⏱️")
+            self.btn_download.setText("📥")
+            self.btn_export.setText("💾")
+            self.btn_save_graph.setText("🖼️")
+            self.btn_recover.setText("♻️")
+            self.btn_clear.setText("🗑️")
+        else:
+            self.btn_sync.setText("⏱️ Sync Meter Time")
+            self.btn_download.setText("📥 Download Raw Memory")
+            self.btn_export.setText("💾 Save Log to Excel")
+            self.btn_save_graph.setText("🖼️ Save Graph PNG")
+            self.btn_recover.setText("♻️ Recover Session")
+            self.btn_clear.setText("🗑️ Clear Data")
+
     def clear_log(self, init_file=False):
         self.table.setRowCount(0)
         self.received_timestamps.clear()
@@ -1076,6 +1089,44 @@ class MeterController(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Export failed! {e}")
 
+
+class SettingsTab(QWidget):
+    def __init__(self, parent_app):
+        super().__init__()
+        self.parent_app = parent_app
+        layout = QVBoxLayout(self)
+        
+        lbl_style = QLabel("Action Button Style:")
+        lbl_style.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        layout.addWidget(lbl_style)
+        
+        self.combo_style = QComboBox()
+        self.combo_style.addItems(["Icon + Text", "Icon Only"])
+        current_style = self.parent_app.meter1.config.get("button_style", "Icon + Text")
+        self.combo_style.setCurrentText(current_style)
+        self.combo_style.currentIndexChanged.connect(self.update_style)
+        layout.addWidget(self.combo_style)
+        
+        layout.addSpacing(20)
+        
+        lbl_restart = QLabel("Application")
+        lbl_restart.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        layout.addWidget(lbl_restart)
+        
+        btn_restart = QPushButton("🔁 Restart Application")
+        btn_restart.setStyleSheet("background-color: #8e44ad; color: white; padding: 10px; font-weight: bold;")
+        btn_restart.clicked.connect(self.parent_app.restart_app)
+        layout.addWidget(btn_restart)
+        
+        layout.addStretch()
+
+    def update_style(self):
+        style = self.combo_style.currentText()
+        self.parent_app.meter1.config["button_style"] = style
+        self.parent_app.meter1.save_config()
+        self.parent_app.meter1.update_button_styles(style)
+        self.parent_app.meter2.update_button_styles(style)
+
 class MeterApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1090,6 +1141,9 @@ class MeterApp(QMainWindow):
         
         self.tabs.addTab(self.meter1, "Meter 1")
         self.tabs.addTab(self.meter2, "Meter 2")
+        
+        self.settings_tab = SettingsTab(self)
+        self.tabs.addTab(self.settings_tab, "Settings")
         
         try:
             if "app_geometry" in self.meter1.config:
@@ -1117,6 +1171,13 @@ class MeterApp(QMainWindow):
             state2_mid = self.meter1.config.get(f"mid_splitter_{self.meter2.meter_id}")
             if state2_mid: self.meter2.mid_splitter.restoreState(QByteArray.fromHex(state2_mid.encode()))
         except Exception: pass
+
+    def restart_app(self):
+        import sys
+        import subprocess
+        self.close()
+        subprocess.Popen([sys.executable] + sys.argv, close_fds=True)
+        QApplication.quit()
 
     def get_used_ports(self):
         used = []
