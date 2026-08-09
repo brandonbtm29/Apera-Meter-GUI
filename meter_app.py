@@ -438,7 +438,7 @@ class MeterController(QWidget):
             {"name": "Run #", "value": ""}
         ]
         
-        global_tokens = getattr(self, 'app', None) and self.app.config.get("global_tokens", None)
+        global_tokens = getattr(self, 'app_controller', None) and self.app_controller.shared_config.get("global_tokens", None)
         if not global_tokens:
             global_tokens = default_tokens
         for t in global_tokens:
@@ -489,8 +489,8 @@ class MeterController(QWidget):
         use_global = self.chk_use_global_template.isChecked()
         self.ent_save_template.setEnabled(not use_global)
         if getattr(self, 'app', None):
-            self.app.config[f"use_global_{self.meter_id}"] = use_global
-            self.app.save_config()
+            self.app_controller.shared_config[f"use_global_{self.meter_id}"] = use_global
+            self.app_controller.save_config()
 
     def get_resolved_string(self, template):
         import datetime
@@ -1119,9 +1119,9 @@ class MeterController(QWidget):
             return
             
         use_global = self.chk_use_global_template.isChecked()
-        if use_global and self.app:
-            template = self.app.config.get("global_filename_template", "<Meter ID>_<Date>_<Time>")
-            docs = self.app.config.get("global_default_save_folder", "Data")
+        if use_global and self.app_controller:
+            template = self.app_controller.shared_config.get("global_filename_template", "<Meter ID>_<Date>_<Time>")
+            docs = self.app_controller.shared_config.get("global_default_save_folder", "Data")
         else:
             template = self.ent_save_template.text()
             docs = self.config.get(f"default_save_location_{self.meter_id}", "")
