@@ -10,6 +10,9 @@ import serial
 import serial.tools.list_ports
 import threading
 import time
+import math
+import threading
+import requests
 import datetime
 import struct
 import csv
@@ -22,11 +25,11 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QSplitter, QScrollArea, QLabel, QPushButton,
     QCheckBox, QLineEdit, QComboBox, QTextEdit, QTableWidget,
-    QTableWidgetItem, QHeaderView, QMessageBox, QFileDialog,
+    QTableWidgetItem, QHeaderView, QMessageBox, QFileDialog, QInputDialog,
     QFormLayout, QFrame, QDialog, QGroupBox, QGridLayout
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import QFont, QColor, QAction
 
 import qdarktheme
 
@@ -52,115 +55,6 @@ class WorkerSignals(QObject):
     update_status = pyqtSignal(str, str)
     update_device_info = pyqtSignal(str, str)
 
-class FilenameBuilderDialog(QDialog):
-    def __init__(self, parent=None, initial_template="", tokens_data=None):
-        super().__init__(parent)
-        self.setWindowTitle("Filename Builder & Custom Tokens")
-        self.setMinimumWidth(600)
-        
-        self.tokens_data = tokens_data or []
-        
-        main_layout = QVBoxLayout(self)
-        
-        gb_tokens = QGroupBox("Metadata Tokens")
-        self.layout_tokens = QVBoxLayout(gb_tokens)
-        self.token_rows = []
-        self.grid_buttons = QGridLayout()
-        
-        btn_add_token = QPushButton("+ Add Custom Token")
-        btn_add_token.clicked.connect(lambda: self.add_token_row("", ""))
-        self.layout_tokens.addWidget(btn_add_token)
-        
-        for t in self.tokens_data:
-            self.add_token_row(t.get("name", ""), t.get("value", ""))
-            
-        main_layout.addWidget(gb_tokens)
-        
-        gb_temp = QGroupBox("Filename Template")
-        l_temp = QVBoxLayout(gb_temp)
-        l_temp.addWidget(QLabel("Click a token below to insert it at the cursor position:"))
-        self.ent_template = QLineEdit(initial_template)
-        l_temp.addWidget(self.ent_template)
-        
-        l_temp.addLayout(self.grid_buttons)
-        self.refresh_token_buttons()
-        main_layout.addWidget(gb_temp)
-        
-        btn_layout = QHBoxLayout()
-        btn_ok = QPushButton("OK")
-        btn_cancel = QPushButton("Cancel")
-        btn_layout.addWidget(btn_ok)
-        btn_layout.addWidget(btn_cancel)
-        main_layout.addLayout(btn_layout)
-        
-        btn_ok.clicked.connect(self.accept)
-        btn_cancel.clicked.connect(self.reject)
-        
-    def add_token_row(self, name, value):
-        row_widget = QWidget()
-        row_layout = QHBoxLayout(row_widget)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        
-        ent_name = QLineEdit(name)
-        ent_name.setPlaceholderText("Token Name")
-        ent_name.textChanged.connect(self.refresh_token_buttons)
-        ent_value = QLineEdit(value)
-        ent_value.setPlaceholderText("Value")
-        
-        btn_remove = QPushButton("X")
-        btn_remove.setFixedWidth(30)
-        btn_remove.setStyleSheet("background-color: #e74c3c; color: white;")
-        
-        row_layout.addWidget(ent_name)
-        row_layout.addWidget(ent_value)
-        row_layout.addWidget(btn_remove)
-        
-        idx = self.layout_tokens.count() - 1
-        self.layout_tokens.insertWidget(idx, row_widget)
-        
-        row_data = (row_widget, ent_name, ent_value)
-        self.token_rows.append(row_data)
-        
-        btn_remove.clicked.connect(lambda: self.remove_token_row(row_data))
-        self.refresh_token_buttons()
-        
-    def remove_token_row(self, row_data):
-        row_widget, ent_name, ent_value = row_data
-        if row_data in self.token_rows:
-            self.token_rows.remove(row_data)
-        self.layout_tokens.removeWidget(row_widget)
-        row_widget.deleteLater()
-        self.refresh_token_buttons()
-        
-    def refresh_token_buttons(self):
-        while self.grid_buttons.count():
-            item = self.grid_buttons.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-                
-        tokens = ["Meter ID", "Date", "Time"]
-        for _, ent_name, _ in self.token_rows:
-            n = ent_name.text().strip()
-            if n and n not in tokens: tokens.append(n)
-            
-        row = 0; col = 0
-        for tok in tokens:
-            btn = QPushButton(f"<{tok}>")
-            btn.clicked.connect(lambda checked, t=tok: self.ent_template.insert(f"<{t}>"))
-            self.grid_buttons.addWidget(btn, row, col)
-            col += 1
-            if col > 3:
-                col = 0
-                row += 1
-
-    def get_token_data(self):
-        data = []
-        for _, ent_name, ent_value in self.token_rows:
-            data.append({
-                "name": ent_name.text().strip(),
-                "value": ent_value.text().strip()
-            })
-        return data
 
 class MeterController(QWidget):
     def __init__(self, meter_id=1, parent_app=None):
@@ -173,6 +67,9 @@ class MeterController(QWidget):
         self.unsaved_changes = False
         self.is_recording = False
         self.received_timestamps = set()
+        self.baseline_log_cond = None
+        self.last_alert_time = 0
+        self.alert_start_time = None
         
         self.plot_dates = []
         self.plot_conds = []
@@ -213,25 +110,9 @@ class MeterController(QWidget):
         self.config.setdefault(f"autosave_min_{meter_id}", "5.0")
         self.config.setdefault(f"save_template_{meter_id}", f"Meter_<{meter_id}>_<Date>")
         
-        docs = self.config.get(f"default_save_location_{meter_id}", "")
-        if not docs or not os.path.isdir(docs):
-            docs = os.path.join(os.environ.get('USERPROFILE', os.path.expanduser('~')), 'Documents')
-        self.emergency_backup_path = os.path.join(docs, f"Apera_Meter{meter_id}_Backup.csv")
         self.columns = ("DateTime", "Duration (min)", "Mode", "Cond (uS/cm)", "Cond (mS/cm)", "Temp (°C)", "Raw Cond_ADC")
-        
+        self.setup_backup_path()
         self.init_ui()
-        
-        has_backup = False
-        if os.path.exists(self.emergency_backup_path):
-            with open(self.emergency_backup_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-                if len(lines) > 1:
-                    has_backup = True
-                    
-        if has_backup:
-            self.recover_session()
-        else:
-            self.init_backup_file()
         
         self.refresh_ports()
         target_com = self.config.get(f"default_com_port_{self.meter_id}", "Auto-Detect Apera Meter")
@@ -257,13 +138,15 @@ class MeterController(QWidget):
         self.top_btn_layout.addWidget(self.btn_sync)
         
         self.btn_download = QPushButton("📥 Download Raw Memory")
+        self.btn_download.setToolTip("Download saved memory records from the meter")
         self.btn_download.setEnabled(False)
         self.btn_download.clicked.connect(self.download_memory)
         self.top_btn_layout.addWidget(self.btn_download)
         
         self.btn_export = QPushButton("💾 Save Log to Excel")
+        self.btn_export.setToolTip("Export the current table data and metadata to an Excel workbook")
         self.btn_export.setStyleSheet("background-color: #27ae60; color: white;")
-        self.btn_export.clicked.connect(lambda: self.save_excel(auto=False))
+        self.btn_export.clicked.connect(lambda checked=False: self.save_excel(auto=False))
         self.top_btn_layout.addWidget(self.btn_export)
         
         self.btn_save_graph = QPushButton("🖼️ Save Graph PNG")
@@ -271,7 +154,7 @@ class MeterController(QWidget):
         self.top_btn_layout.addWidget(self.btn_save_graph)
         
         self.btn_recover = QPushButton("♻️ Recover Session")
-        self.btn_recover.clicked.connect(self.recover_session)
+        self.btn_recover.clicked.connect(self.prompt_session_recovery)
         self.top_btn_layout.addWidget(self.btn_recover)
         
         self.btn_clear = QPushButton("🗑️ Clear Data")
@@ -359,13 +242,7 @@ class MeterController(QWidget):
         self.btn_apply_lims.clicked.connect(self.apply_limits)
         left_layout.addWidget(self.btn_apply_lims)
         
-        line2 = QFrame()
-        line2.setFrameShape(QFrame.Shape.HLine)
-        left_layout.addWidget(line2)
-        
-        self.btn_settings = QPushButton("⚙️ Advanced Settings")
-        self.btn_settings.clicked.connect(self.open_settings)
-        left_layout.addWidget(self.btn_settings)
+
         left_layout.addStretch()
         
         left_scroll = QScrollArea()
@@ -399,6 +276,13 @@ class MeterController(QWidget):
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(10, 10, 10, 10)
         
+        self.sn_label = QLabel("SN: Unknown")
+        self.model_label = QLabel("Model: Unknown")
+        self.sn_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        self.model_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        right_layout.addWidget(self.sn_label)
+        right_layout.addWidget(self.model_label)
+
         lbl_conn = QLabel("Connection")
         lbl_conn.setFont(QFont("Arial", 12, QFont.Weight.Bold))
         right_layout.addWidget(lbl_conn)
@@ -414,27 +298,43 @@ class MeterController(QWidget):
         self.btn_connect.clicked.connect(self.toggle_connection)
         right_layout.addWidget(self.btn_connect)
 
-        # --- Auto-Save & Filename ---
-        gb_save = QGroupBox("Auto-Save & Filename")
-        l_save = QGridLayout()
-        gb_save.setLayout(l_save)
+        # Metadata Tokens
+        self.gb_tokens = QGroupBox("Metadata Tokens")
+        self.tokens_outer_layout = QVBoxLayout(self.gb_tokens)
+        self.l_tokens = QFormLayout()
+        self.tokens_outer_layout.addLayout(self.l_tokens)
         
-        l_save.addWidget(QLabel("Filename Template:"), 0, 0)
+        self.btn_add_tab_token = QPushButton("+ Add Custom Token")
+        self.btn_add_tab_token.clicked.connect(self.request_add_custom_token)
+        self.tokens_outer_layout.addWidget(self.btn_add_tab_token)
+        self.token_inputs = {}
+        right_layout.addWidget(self.gb_tokens)
+
+        # --- Data Recording & Export ---
+        gb_save = QGroupBox("Data Recording & Export")
+        l_save = QFormLayout(gb_save)
+        
+        self.chk_use_global_template = QCheckBox("Use Global Save Settings")
+        self.chk_use_global_template.setChecked(self.config.get(f"use_global_{self.meter_id}", True))
+        self.chk_use_global_template.toggled.connect(self.toggle_global_template)
+        l_save.addRow(self.chk_use_global_template)
+        
         self.ent_save_template = QLineEdit(self.config.get(f"save_template_{self.meter_id}", ""))
-        l_save.addWidget(self.ent_save_template, 0, 1)
-        btn_edit_template = QPushButton("Edit")
-        btn_edit_template.clicked.connect(self.open_filename_builder)
-        l_save.addWidget(btn_edit_template, 0, 2)
+        l_save.addRow("Filename Template:", self.ent_save_template)
         
-        l_save.addWidget(QLabel("Auto-Save Mode:"), 1, 0)
         self.combo_autosave = QComboBox()
         self.combo_autosave.addItems(["Off", "On Auto-Stop", "Every X Minutes"])
         self.combo_autosave.setCurrentText(self.config.get(f"autosave_mode_{self.meter_id}", "Off"))
-        l_save.addWidget(self.combo_autosave, 1, 1, 1, 2)
+        l_save.addRow("Auto-Save:", self.combo_autosave)
         
-        l_save.addWidget(QLabel("Auto-Save Interval (min):"), 2, 0)
         self.ent_autosave_min = QLineEdit(self.config.get(f"autosave_min_{self.meter_id}", "5.0"))
-        l_save.addWidget(self.ent_autosave_min, 2, 1, 1, 2)
+        self.ent_autosave_min.setPlaceholderText("Minutes")
+        l_save.addRow("Interval (min):", self.ent_autosave_min)
+        
+        btn_export = QPushButton("💾 Export to Excel")
+        btn_export.setStyleSheet("background-color: #27ae60; color: white;")
+        btn_export.clicked.connect(lambda checked=False: self.save_excel(auto=False))
+        l_save.addRow(btn_export)
         
         self.combo_autosave.currentIndexChanged.connect(self.toggle_autosave_interval)
         self.combo_autosave.currentIndexChanged.connect(self._save_autosave_config)
@@ -444,14 +344,12 @@ class MeterController(QWidget):
         
         right_layout.addWidget(gb_save)
         
+        self.refresh_tokens()
+        self.toggle_global_template()
+        
         self.lbl_status = QLabel("Status: Disconnected")
         self.lbl_status.setStyleSheet("color: gray;")
         right_layout.addWidget(self.lbl_status)
-        
-        self.sn_label = QLabel("SN: Unknown")
-        self.model_label = QLabel("Model: Unknown")
-        right_layout.addWidget(self.sn_label)
-        right_layout.addWidget(self.model_label)
         
         line3 = QFrame()
         line3.setFrameShape(QFrame.Shape.HLine)
@@ -461,6 +359,7 @@ class MeterController(QWidget):
         lbl_notes.setFont(QFont("Arial", 12, QFont.Weight.Bold))
         right_layout.addWidget(lbl_notes)
         self.txt_notes = QTextEdit()
+        self.txt_notes.setMinimumHeight(200)
         self.txt_notes.setText(self.config.get(f"meter_notes_{self.meter_id}", ""))
         self.txt_notes.textChanged.connect(self.save_notes)
         right_layout.addWidget(self.txt_notes)
@@ -486,13 +385,6 @@ class MeterController(QWidget):
         
         self.update_button_styles(self.config.get("button_style", "Icon + Text"))
 
-    def init_backup_file(self):
-        try:
-            if not os.path.exists(self.emergency_backup_path):
-                with open(self.emergency_backup_path, "w", newline="", encoding="utf-8") as f:
-                    writer = csv.writer(f)
-                    writer.writerow(self.columns)
-        except Exception: pass
 
     def load_config(self):
         # We handle loading during initialization in the shared config logic now.
@@ -512,7 +404,7 @@ class MeterController(QWidget):
         ports = serial.tools.list_ports.comports()
         return ["Auto-Detect Apera Meter"] + [p.device for p in ports]
 
-    def refresh_ports(self):
+    def refresh_ports(self, checked=False):
         ports = self.get_ports()
         self.port_combo.clear()
         self.port_combo.addItems(ports)
@@ -531,7 +423,13 @@ class MeterController(QWidget):
     def toggle_autosave_interval(self):
         self.ent_autosave_min.setEnabled(self.combo_autosave.currentText() == "Every X Minutes")
 
-    def open_filename_builder(self):
+    def refresh_tokens(self):
+        while self.l_tokens.rowCount() > 0:
+            self.l_tokens.removeRow(0)
+            
+        old_values = {k: v.text() for k, v in getattr(self, 'token_inputs', {}).items()}
+        self.token_inputs = {}
+        
         default_tokens = [
             {"name": "Column Name", "value": ""},
             {"name": "Material", "value": ""},
@@ -539,30 +437,73 @@ class MeterController(QWidget):
             {"name": "Bed length", "value": ""},
             {"name": "Run #", "value": ""}
         ]
-        tokens_data = self.config.get(f"meter_tokens_{self.meter_id}", default_tokens)
-        dialog = FilenameBuilderDialog(self, self.ent_save_template.text(), tokens_data)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.ent_save_template.setText(dialog.ent_template.text())
-            self.config[f"meter_tokens_{self.meter_id}"] = dialog.get_token_data()
-            self.save_config()
+        
+        global_tokens = getattr(self, 'app', None) and self.app.config.get("global_tokens", None)
+        if not global_tokens:
+            global_tokens = default_tokens
+        for t in global_tokens:
+            name = t.get("name", "")
+            val = t.get("value", "")
+            if name:
+                ent = QLineEdit(old_values.get(name, val))
+                self.l_tokens.addRow(name + ":", ent)
+                self.token_inputs[name] = ent
+                
+        # restore custom tokens
+        for name, val in old_values.items():
+            if name not in self.token_inputs:
+                self.add_custom_token_ui(name, val)
+                
+    def request_add_custom_token(self, checked=False):
+        name, ok = QInputDialog.getText(self, "Add Custom Token", "Token Name:")
+        if ok and name:
+            name = name.strip()
+            if name in self.token_inputs:
+                QMessageBox.warning(self, "Warning", "Token already exists!")
+                return
+            self.add_custom_token_ui(name, "")
+            
+    def add_custom_token_ui(self, name, value):
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        
+        ent = QLineEdit(value)
+        btn_del = QPushButton("X")
+        btn_del.setFixedWidth(25)
+        btn_del.setStyleSheet("background-color: #e74c3c; color: white;")
+        btn_del.clicked.connect(lambda _, n=name: self.remove_custom_token(n))
+        
+        row_layout.addWidget(ent)
+        row_layout.addWidget(btn_del)
+        
+        self.l_tokens.addRow(name + ":", row_widget)
+        self.token_inputs[name] = ent
+        
+    def remove_custom_token(self, name):
+        if name in self.token_inputs:
+            self.token_inputs.pop(name)
+            self.refresh_tokens()
 
-    def get_resolved_string(self, template_str):
-        if not template_str: return ""
-        s = template_str
+    def toggle_global_template(self):
+        use_global = self.chk_use_global_template.isChecked()
+        self.ent_save_template.setEnabled(not use_global)
+        if getattr(self, 'app', None):
+            self.app.config[f"use_global_{self.meter_id}"] = use_global
+            self.app.save_config()
+
+    def get_resolved_string(self, template):
+        import datetime
+        s = template
+        if hasattr(self, 'token_inputs'):
+            for name, ent in self.token_inputs.items():
+                s = s.replace(f"<{name}>", ent.text())
         s = s.replace("<Meter ID>", str(self.meter_id))
         s = s.replace("<Date>", datetime.datetime.now().strftime("%Y-%m-%d"))
         s = s.replace("<Time>", datetime.datetime.now().strftime("%H%M%S"))
-        
-        custom_tokens = self.config.get(f"meter_tokens_{self.meter_id}", [])
-        for t in custom_tokens:
-            name = t.get("name", "")
-            value = t.get("value", "")
-            if name:
-                s = s.replace(f"<{name}>", value)
-                
         return s
 
-    def toggle_record(self):
+    def toggle_record(self, checked=False):
         if not self.is_recording:
             self.is_recording = True
             self.session_start_time = None
@@ -592,7 +533,7 @@ class MeterController(QWidget):
         except: pass
         self.plot_data()
 
-    def apply_limits(self):
+    def apply_limits(self, checked=False):
         try:
             self.config[f"time_win_{self.meter_id}"] = self.ent_time_win.text()
             self.config[f"cond_min_{self.meter_id}"] = self.ent_cond_min.text()
@@ -608,7 +549,7 @@ class MeterController(QWidget):
         
         self.plot_data()
 
-    def save_graph(self):
+    def save_graph(self, checked=False):
         filepath, _ = QFileDialog.getSaveFileName(self, "Save Graph", "", "PNG (*.png)")
         if filepath:
             try:
@@ -617,62 +558,6 @@ class MeterController(QWidget):
             except Exception as e:
                 QMessageBox.critical(self, "Error", str(e))
 
-    def open_settings(self):
-        dlg = QDialog(self)
-        dlg.setWindowTitle(f"Settings - Meter {self.meter_id}")
-        dlg.resize(400, 200)
-        layout = QVBoxLayout(dlg)
-        
-        layout.addWidget(QLabel("Default Save Directory:"))
-        lbl_dir = QLabel(self.config.get(f"default_save_location_{self.meter_id}", "Not Set"))
-        layout.addWidget(lbl_dir)
-        
-        def choose_dir():
-            d = QFileDialog.getExistingDirectory(self, "Select Directory")
-            if d:
-                lbl_dir.setText(d)
-                self.config[f"default_save_location_{self.meter_id}"] = d
-                self.save_config()
-                
-        btn_dir = QPushButton("Browse...")
-        btn_dir.clicked.connect(choose_dir)
-        layout.addWidget(btn_dir)
-        
-        ka_chk = QCheckBox("Enable Keep-Alive (Ping every 2s)")
-        ka_chk.setChecked(self.config.get(f"keep_alive_{self.meter_id}", True))
-        
-        auto_sync_chk = QCheckBox("Auto-Sync Time on Connect")
-        auto_sync_chk.setChecked(self.config.get(f"auto_sync_{self.meter_id}", False))
-        
-        def save_and_close():
-            self.config[f"keep_alive_{self.meter_id}"] = ka_chk.isChecked()
-            self.config[f"auto_sync_{self.meter_id}"] = auto_sync_chk.isChecked()
-            self.save_config()
-            dlg.accept()
-            
-        layout.addWidget(ka_chk)
-        layout.addWidget(auto_sync_chk)
-        
-        def wipe_backup():
-            reply = QMessageBox.question(dlg, "Confirm", "Are you sure you want to permanently delete the backup logs?",
-                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            if reply == QMessageBox.StandardButton.Yes:
-                self.init_backup_file()
-                QMessageBox.information(dlg, "Success", "Backup logs wiped successfully.")
-        
-        btn_wipe = QPushButton("🗑️ Clear Backup Logs")
-        btn_wipe.setStyleSheet("background-color: #e74c3c; color: white;")
-        btn_wipe.clicked.connect(wipe_backup)
-        layout.addWidget(btn_wipe)
-        
-        btn_close = QPushButton("Save & Close")
-        btn_close.clicked.connect(save_and_close)
-        layout.addWidget(btn_close)
-        
-        dlg.exec()
-
-
-        
     def update_button_styles(self, style):
         if style == "Icon Only":
             self.btn_sync.setText("⏱️")
@@ -697,59 +582,133 @@ class MeterController(QWidget):
         self.plot_temps.clear()
         self.session_start_time = None
         self.last_auto_dump_time = time.time()
-        
-        if init_file:
-            try:
-                with open(self.emergency_backup_path, "w", newline="", encoding="utf-8") as f:
-                    writer = csv.writer(f)
-                    writer.writerow(self.columns)
-            except: pass
         self.plot_data()
 
-    def recover_session(self):
-        if not os.path.exists(self.emergency_backup_path):
-            QMessageBox.information(self, "Recover", "No backup file found to recover.")
-            return
-            
+    def setup_backup_path(self):
+        backup_dir = os.path.join(os.getcwd(), "Data Backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        self.backup_path = os.path.join(backup_dir, f"Apera_Meter{self.meter_id}_Backup.csv")
+
+    def scan_backup_sessions(self):
+        if not os.path.exists(self.backup_path): return []
+        sessions = []
         try:
-            with open(self.emergency_backup_path, "r", encoding="utf-8") as f:
+            with open(self.backup_path, 'r', newline='', encoding='utf-8') as f:
                 reader = csv.reader(f)
                 header = next(reader, None)
                 rows = list(reader)
                 
-            self.clear_log(init_file=False)
+            current_session = None
+            last_dur = -1.0
             
-            self.table.setSortingEnabled(False)
-            for row in rows:
-                if len(row) == 6:
-                    dur_min = "0.00"
-                    try: dur_min = f"{float(row[1]) * 60:.2f}"
-                    except: pass
-                    row = [row[0], dur_min, "Cond", row[2], row[3], row[4], row[5]]
-                    
-                if len(row) >= 7:
-                    self.received_timestamps.add(row[0])
-                    r = self.table.rowCount()
-                    self.table.insertRow(r)
-                    for col, val in enumerate(row):
-                        self.table.setItem(r, col, NumericTableWidgetItem(str(val)))
-                    
+            for idx, row in enumerate(rows):
+                if len(row) >= 6:
                     try:
-                        dt = datetime.datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
-                        if not getattr(self, 'session_start_time', None):
-                            self.session_start_time = dt
-                        self.plot_dates.append(dt)
-                        self.plot_conds.append(float(row[3]) if row[3] else 0.0)
-                        self.plot_temps.append(float(row[5]) if row[5] else 0.0)
-                    except: pass
+                        ts = row[0]
+                        dur = float(row[1])
                         
-            self.table.setSortingEnabled(True)
-            self.plot_data()
-            QMessageBox.information(self, "Recover", f"Recovered {len(rows)} points.")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Recovery failed: {e}")
+                        if current_session is None or dur < last_dur:
+                            if current_session:
+                                current_session["end_idx"] = idx - 1
+                                sessions.append(current_session)
+                            current_session = {"start_idx": idx, "start_ts": ts, "end_ts": ts, "points": 0}
+                            
+                        current_session["end_ts"] = ts
+                        current_session["points"] += 1
+                        last_dur = dur
+                    except: pass
+                    
+            if current_session:
+                current_session["end_idx"] = len(rows) - 1
+                sessions.append(current_session)
+        except: pass
+        return sessions
 
-    def toggle_connection(self):
+    def prompt_session_recovery(self, checked=False):
+        sessions = self.scan_backup_sessions()
+        if not sessions: 
+            QMessageBox.information(self, "Recovery", "No recovery sessions found.")
+            return
+            
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Restore Session")
+        dialog.setMinimumSize(400, 300)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Multiple recording sessions were found. Please select which one to restore:"))
+        
+        scroll = QScrollArea()
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+        
+        bg = QButtonGroup(dialog)
+        for i, s in enumerate(sessions):
+            rb = QRadioButton(f"Session {i+1} | {s['start_ts']} -> {s['end_ts']} | {s['points']} pts")
+            if i == len(sessions)-1: rb.setChecked(True)
+            bg.addButton(rb, i)
+            scroll_layout.addWidget(rb)
+            
+        scroll_widget.setLayout(scroll_layout)
+        scroll.setWidget(scroll_widget)
+        scroll.setWidgetResizable(True)
+        layout.addWidget(scroll)
+        
+        btn_layout = QHBoxLayout()
+        btn_restore = QPushButton("Restore Selected")
+        btn_ignore = QPushButton("Cancel")
+        btn_layout.addWidget(btn_restore)
+        btn_layout.addWidget(btn_ignore)
+        layout.addLayout(btn_layout)
+        
+        def do_restore(checked=False):
+            idx = bg.checkedId()
+            if idx >= 0:
+                s = sessions[idx]
+                try:
+                    with open(self.backup_path, 'r', newline='', encoding='utf-8') as f:
+                        reader = csv.reader(f)
+                        header = next(reader, None)
+                        rows = list(reader)
+                        
+                    self.clear_log(init_file=False)
+                    self.table.setSortingEnabled(False)
+                    
+                    for r_idx in range(s["start_idx"], s["end_idx"] + 1):
+                        row = rows[r_idx]
+                        if len(row) == 6:
+                            dur_min = "0.00"
+                            try: dur_min = f"{float(row[1]) * 60:.2f}"
+                            except: pass
+                            row = [row[0], dur_min, "Cond", row[2], row[3], row[4], row[5]]
+                            
+                        if len(row) >= 7:
+                            self.received_timestamps.add(row[0])
+                            r = self.table.rowCount()
+                            self.table.insertRow(r)
+                            for col, val in enumerate(row):
+                                self.table.setItem(r, col, NumericTableWidgetItem(str(val)))
+                            
+                            try:
+                                dt = datetime.datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+                                if not getattr(self, 'session_start_time', None):
+                                    self.session_start_time = dt
+                                self.plot_dates.append(dt)
+                                self.plot_conds.append(float(row[3]) if row[3] else 0.0)
+                                self.plot_temps.append(float(row[5]) if row[5] else 0.0)
+                            except: pass
+                            
+                    self.table.setSortingEnabled(True)
+                    self.plot_data()
+                    QMessageBox.information(self, "Recover", f"Recovered {s['points']} points.")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Recovery failed: {e}")
+            dialog.accept()
+            
+        btn_restore.clicked.connect(do_restore)
+        btn_ignore.clicked.connect(dialog.reject)
+        dialog.exec()
+
+
+    def toggle_connection(self, checked=False):
         if self.is_connected:
             self.disconnect_meter()
         else:
@@ -831,7 +790,8 @@ class MeterController(QWidget):
             self.save_config()
             
             self.ser.write(b"&OK#\r\n")
-            QTimer.singleShot(500, self.sync_time)
+            if self.app_controller and self.app_controller.shared_config.get("global_auto_sync", False):
+                QTimer.singleShot(500, self.sync_time)
             
             threading.Thread(target=self.read_serial_loop, daemon=True).start()
             threading.Thread(target=self.keep_alive_loop, daemon=True).start()
@@ -1001,8 +961,11 @@ class MeterController(QWidget):
         self.unsaved_changes = True
         
         try:
-            with open(self.emergency_backup_path, "a", newline="", encoding="utf-8") as f:
+            is_new = not os.path.exists(self.backup_path)
+            with open(self.backup_path, "a", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
+                if is_new:
+                    writer.writerow(self.columns)
                 writer.writerow(full_row)
         except: pass
         
@@ -1020,6 +983,23 @@ class MeterController(QWidget):
         if typ == "SN": self.sn_label.setText(f"SN: {val}")
         elif typ == "Model": self.model_label.setText(f"Model: {val}")
 
+
+    def send_discord_alert(self, url, msg):
+        if not url: return
+        def worker():
+            try:
+                requests.post(url, json={"content": msg}, timeout=5)
+            except Exception as e:
+                print("Webhook error:", e)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def test_discord_alert(self, checked=False):
+        url = self.config.get(f"alert_webhook_{self.meter_id}", "")
+        if url:
+            self.send_discord_alert(url, f"🧪 **Test Alert from Meter {self.meter_id}**\\nThis is a test to confirm the webhook works!")
+            QMessageBox.information(self, "Test Sent", "Test alert dispatched to Discord.")
+        else:
+            QMessageBox.warning(self, "No Webhook", "Please save a Discord Webhook URL first.")
     def schedule_plot(self):
         if not getattr(self, "_plot_scheduled", False):
             self._plot_scheduled = True
@@ -1114,7 +1094,7 @@ class MeterController(QWidget):
         self.fig.tight_layout()
         self.canvas.draw_idle()
 
-    def sync_time(self):
+    def sync_time(self, checked=False):
         if self.is_connected and self.ser:
             now = datetime.datetime.now()
             try:
@@ -1128,7 +1108,7 @@ class MeterController(QWidget):
                 self.ser.write(packet)
             except: pass
 
-    def download_memory(self):
+    def download_memory(self, checked=False):
         if self.is_connected and self.ser:
             self.lbl_status.setText("Status: Downloading Memory...")
             self.ser.write(b"&WA#\r\n")
@@ -1138,25 +1118,29 @@ class MeterController(QWidget):
             if not auto: QMessageBox.information(self, "Export", "No data to export.")
             return
             
-        filename = self.get_resolved_string(self.ent_save_template.text())
-        if not filename:
-            filename = f"Meter{self.meter_id}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        use_global = self.chk_use_global_template.isChecked()
+        if use_global and self.app:
+            template = self.app.config.get("global_filename_template", "<Meter ID>_<Date>_<Time>")
+            docs = self.app.config.get("global_default_save_folder", "Data")
+        else:
+            template = self.ent_save_template.text()
+            docs = self.config.get(f"default_save_location_{self.meter_id}", "")
+            
+        if not template.strip(): template = "<Meter ID>_<Date>_<Time>"
+        filename = self.get_resolved_string(template)
         if not filename.endswith(".xlsx"): filename += ".xlsx"
         filename = filename.replace(' ', '_')
         
-        if auto:
-            docs = self.config.get(f"default_save_location_{self.meter_id}", "")
-            if not docs or not os.path.isdir(docs): docs = os.path.expanduser("~/Documents")
-            filepath = os.path.join(docs, filename)
-        else:
-            docs = self.config.get(f"default_save_location_{self.meter_id}", "")
-            if not docs or not os.path.isdir(docs): docs = os.path.expanduser("~/Documents")
-            initial_file = os.path.join(docs, filename)
-            filepath, _ = QFileDialog.getSaveFileName(self, "Export Excel", initial_file, "Excel files (*.xlsx);;All files (*.*)")
+        if not docs or not os.path.isdir(docs): docs = os.path.expanduser("~/Documents")
+        filepath = os.path.join(docs, filename)
+        
+        if not auto:
+            filepath, _ = QFileDialog.getSaveFileName(self, "Export Excel", filepath, "Excel files (*.xlsx);;All files (*.*)")
             if not filepath: return
         
         try:
-            # Extract data from table
+            from openpyxl.utils.dataframe import dataframe_to_rows
+            
             data = []
             for row in range(self.table.rowCount()):
                 row_data = []
@@ -1167,73 +1151,232 @@ class MeterController(QWidget):
             
             df = pd.DataFrame(data, columns=self.columns)
             
-            # Write to excel with documentation sheet using openpyxl directly
             wb = openpyxl.Workbook()
-            doc_ws = wb.active
-            doc_ws.title = "Documentation"
-            doc_ws["A1"] = "Experiment Documentation"
-            doc_ws["A1"].font = Font(size=16, bold=True)
+            
+            data_ws = wb.active
+            data_ws.title = "Data"
+            for r in dataframe_to_rows(df, index=False, header=True):
+                data_ws.append(r)
+                
+            doc_ws = wb.create_sheet(title="Documentation")
+            doc_ws["A1"] = f"{self.meter_id} - Experiment Documentation"
+            doc_ws["A1"].font = Font(size=14, bold=True)
             doc_ws["A3"] = "Export Date:"
             doc_ws["B3"] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             doc_ws["A4"] = "Meter SN:"
             doc_ws["B4"] = self.sn_label.text().replace("SN: ", "")
-            doc_ws["A5"] = "Experiment Notes:"
-            doc_ws["A5"].font = Font(bold=True)
-            doc_ws["A6"] = self.txt_notes.toPlainText()
-            doc_ws["A6"].alignment = Alignment(wrap_text=True, vertical="top")
-            doc_ws.row_dimensions[6].height = 100
+            
+            current_row = 6
+            doc_ws.cell(row=current_row, column=1, value="Metadata Tokens").font = Font(bold=True)
+            current_row += 1
+            if hasattr(self, 'token_inputs'):
+                for name, ent in self.token_inputs.items():
+                    doc_ws.cell(row=current_row, column=1, value=name + ":")
+                    doc_ws.cell(row=current_row, column=2, value=ent.text())
+                    current_row += 1
+                    
+            current_row += 1
+            doc_ws.cell(row=current_row, column=1, value="Experiment Notes:").font = Font(bold=True)
+            current_row += 1
+            doc_ws.cell(row=current_row, column=1, value=self.txt_notes.toPlainText()).alignment = Alignment(wrap_text=True, vertical="top")
+            doc_ws.row_dimensions[current_row].height = 100
+            
             doc_ws.column_dimensions["A"].width = 25
             doc_ws.column_dimensions["B"].width = 35
             
             wb.save(filepath)
-            self.lbl_status.setText(f"Status: Exported to Excel!")
+            if not auto:
+                self.lbl_status.setText(f"Status: Exported to Excel!")
             self.unsaved_changes = False
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Export failed! {e}")
+            if not auto:
+                QMessageBox.critical(self, "Error", f"Export failed! {e}")
 
 
-class SettingsTab(QWidget):
+class SettingsTab(QScrollArea):
     def __init__(self, parent_app):
         super().__init__()
         self.parent_app = parent_app
-        layout = QVBoxLayout(self)
+        self.setWidgetResizable(True)
         
-        lbl_style = QLabel("Action Button Style:")
-        lbl_style.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        layout.addWidget(lbl_style)
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
+        layout.setContentsMargins(20, 20, 20, 20)
         
+        # 1. Global Saving Settings
+        gb_global = QGroupBox("Global Saving Settings")
+        gb_global.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        l_global = QVBoxLayout(gb_global)
+        
+        dir_layout = QHBoxLayout()
+        self.lbl_folder = QLabel(self.parent_app.meter1.config.get("global_default_save_folder", "Data"))
+        btn_folder = QPushButton("Browse...")
+        btn_folder.clicked.connect(self.choose_global_dir)
+        dir_layout.addWidget(QLabel("Default Global Directory:"))
+        dir_layout.addWidget(self.lbl_folder)
+        dir_layout.addWidget(btn_folder)
+        l_global.addLayout(dir_layout)
+        
+        l_global.addWidget(QLabel("Filename Template:"))
+        self.ent_template = QLineEdit(self.parent_app.meter1.config.get("global_filename_template", "<Meter ID>_<Date>_<Time>"))
+        l_global.addWidget(self.ent_template)
+        
+        l_global.addWidget(QLabel("Click to insert token:"))
+        grid_buttons = QGridLayout()
+        tokens = ["Date", "Time", "Meter ID", "Column Name", "Material", "Flow rate (ml/min)", "Bed length (cm)", "Run #"]
+        for i, tok in enumerate(tokens):
+            btn = QPushButton(f"<{tok}>")
+            btn.clicked.connect(lambda checked, t=tok: self.ent_template.insert(f"<{t}>"))
+            grid_buttons.addWidget(btn, i // 4, i % 4)
+        l_global.addLayout(grid_buttons)
+        
+        self.auto_sync_chk = QCheckBox("Auto-Sync Time on Connect (All Meters)")
+        self.auto_sync_chk.setChecked(self.parent_app.meter1.config.get("global_auto_sync", False))
+        l_global.addWidget(self.auto_sync_chk)
+        
+        layout.addWidget(gb_global)
+        
+        # 2. Meter 1 Settings
+        gb_m1 = QGroupBox("Meter 1 Settings & Alerts")
+        gb_m1.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        l_m1 = QFormLayout(gb_m1)
+        self.lbl_dir1 = QLabel(self.parent_app.meter1.config.get(f"default_save_location_1", "Not Set"))
+        btn_dir1 = QPushButton("Browse...")
+        btn_dir1.clicked.connect(lambda checked=False: self.choose_meter_dir(1, self.lbl_dir1))
+        d1 = QHBoxLayout(); d1.addWidget(self.lbl_dir1); d1.addWidget(btn_dir1)
+        l_m1.addRow("Meter 1 Save Directory:", d1)
+        self.ka1_chk = QCheckBox("Enable Keep-Alive (Ping every 2s)")
+        self.ka1_chk.setChecked(self.parent_app.meter1.config.get(f"keep_alive_1", True))
+        l_m1.addRow("", self.ka1_chk)
+        
+        self.al1_chk = QCheckBox("Enable Discord Alerts")
+        self.al1_chk.setChecked(self.parent_app.meter1.config.get(f"alert_enabled_1", False))
+        self.al1_web = QLineEdit(self.parent_app.meter1.config.get(f"alert_webhook_1", ""))
+        self.al1_thr = QLineEdit(str(self.parent_app.meter1.config.get(f"alert_threshold_1", "0.5")))
+        self.al1_cool = QLineEdit(str(self.parent_app.meter1.config.get(f"alert_cooldown_1", "5.0")))
+        self.al1_del = QLineEdit(str(self.parent_app.meter1.config.get(f"alert_delay_1", "5.0")))
+        btn_test1 = QPushButton("Test Webhook")
+        btn_test1.clicked.connect(self.parent_app.meter1.test_discord_alert)
+        l_m1.addRow("", self.al1_chk)
+        l_m1.addRow("Discord Webhook URL:", self.al1_web)
+        l_m1.addRow("Log Change Threshold:", self.al1_thr)
+        l_m1.addRow("Baseline Delay (Minutes):", self.al1_del)
+        l_m1.addRow("Cooldown (Minutes):", self.al1_cool)
+        l_m1.addRow("", btn_test1)
+        layout.addWidget(gb_m1)
+        
+        # 3. Meter 2 Settings
+        gb_m2 = QGroupBox("Meter 2 Settings & Alerts")
+        gb_m2.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        l_m2 = QFormLayout(gb_m2)
+        self.lbl_dir2 = QLabel(self.parent_app.meter2.config.get(f"default_save_location_2", "Not Set"))
+        btn_dir2 = QPushButton("Browse...")
+        btn_dir2.clicked.connect(lambda checked=False: self.choose_meter_dir(2, self.lbl_dir2))
+        d2 = QHBoxLayout(); d2.addWidget(self.lbl_dir2); d2.addWidget(btn_dir2)
+        l_m2.addRow("Meter 2 Save Directory:", d2)
+        self.ka2_chk = QCheckBox("Enable Keep-Alive (Ping every 2s)")
+        self.ka2_chk.setChecked(self.parent_app.meter2.config.get(f"keep_alive_2", True))
+        l_m2.addRow("", self.ka2_chk)
+
+        self.al2_chk = QCheckBox("Enable Discord Alerts")
+        self.al2_chk.setChecked(self.parent_app.meter2.config.get(f"alert_enabled_2", False))
+        self.al2_web = QLineEdit(self.parent_app.meter2.config.get(f"alert_webhook_2", ""))
+        self.al2_thr = QLineEdit(str(self.parent_app.meter2.config.get(f"alert_threshold_2", "0.5")))
+        self.al2_cool = QLineEdit(str(self.parent_app.meter2.config.get(f"alert_cooldown_2", "5.0")))
+        self.al2_del = QLineEdit(str(self.parent_app.meter2.config.get(f"alert_delay_2", "5.0")))
+        btn_test2 = QPushButton("Test Webhook")
+        btn_test2.clicked.connect(self.parent_app.meter2.test_discord_alert)
+        l_m2.addRow("", self.al2_chk)
+        l_m2.addRow("Discord Webhook URL:", self.al2_web)
+        l_m2.addRow("Log Change Threshold:", self.al2_thr)
+        l_m2.addRow("Baseline Delay (Minutes):", self.al2_del)
+        l_m2.addRow("Cooldown (Minutes):", self.al2_cool)
+        l_m2.addRow("", btn_test2)
+        layout.addWidget(gb_m2)
+        
+        # 4. App Preferences
+        gb_app = QGroupBox("Application Preferences")
+        gb_app.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        l_app = QVBoxLayout(gb_app)
+        
+        style_layout = QHBoxLayout()
+        style_layout.addWidget(QLabel("Action Button Style:"))
         self.combo_style = QComboBox()
         self.combo_style.addItems(["Icon + Text", "Icon Only"])
-        current_style = self.parent_app.meter1.config.get("button_style", "Icon + Text")
-        self.combo_style.setCurrentText(current_style)
-        self.combo_style.currentIndexChanged.connect(self.update_style)
-        layout.addWidget(self.combo_style)
+        self.combo_style.setCurrentText(self.parent_app.meter1.config.get("button_style", "Icon + Text"))
+        style_layout.addWidget(self.combo_style)
+        l_app.addLayout(style_layout)
         
-        layout.addSpacing(20)
-        
-        lbl_restart = QLabel("Application")
-        lbl_restart.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        layout.addWidget(lbl_restart)
-        
-        btn_restart = QPushButton("🔁 Restart Application")
+        btn_restart = QPushButton("🔄 Restart Application")
         btn_restart.setStyleSheet("background-color: #8e44ad; color: white; padding: 10px; font-weight: bold;")
         btn_restart.clicked.connect(self.parent_app.restart_app)
-        layout.addWidget(btn_restart)
+        l_app.addWidget(btn_restart)
+        layout.addWidget(gb_app)
+        
+        # Save Button
+        btn_save = QPushButton("💾 Save All Settings")
+        btn_save.setStyleSheet("background-color: #3498db; color: white; padding: 12px; font-size: 14px; font-weight: bold;")
+        btn_save.clicked.connect(self.save_all)
+        layout.addWidget(btn_save)
         
         layout.addStretch()
+        self.setWidget(content_widget)
 
-    def update_style(self):
+    def choose_global_dir(self, checked=False):
+        d = QFileDialog.getExistingDirectory(self, "Select Global Directory")
+        if d: self.lbl_folder.setText(d)
+        
+    def choose_meter_dir(self, meter_id, lbl):
+        d = QFileDialog.getExistingDirectory(self, f"Select Directory for Meter {meter_id}")
+        if d: lbl.setText(d)
+
+    def save_all(self, checked=False):
+        # Meter 1 config
+        c1 = self.parent_app.meter1.config
+        c1["global_default_save_folder"] = self.lbl_folder.text()
+        c1["global_filename_template"] = self.ent_template.text()
+        c1["global_auto_sync"] = self.auto_sync_chk.isChecked()
+        c1["default_save_location_1"] = self.lbl_dir1.text()
+        c1["keep_alive_1"] = self.ka1_chk.isChecked()
+        c1["alert_enabled_1"] = self.al1_chk.isChecked()
+        c1["alert_webhook_1"] = self.al1_web.text()
+        c1["alert_threshold_1"] = self.al1_thr.text()
+        c1["alert_delay_1"] = self.al1_del.text()
+        c1["alert_cooldown_1"] = self.al1_cool.text()
+        
+        # Meter 2 config
+        c2 = self.parent_app.meter2.config
+        c2["global_default_save_folder"] = self.lbl_folder.text()
+        c2["global_filename_template"] = self.ent_template.text()
+        c2["global_auto_sync"] = self.auto_sync_chk.isChecked()
+        c2["default_save_location_2"] = self.lbl_dir2.text()
+        c2["keep_alive_2"] = self.ka2_chk.isChecked()
+        c2["alert_enabled_2"] = self.al2_chk.isChecked()
+        c2["alert_webhook_2"] = self.al2_web.text()
+        c2["alert_threshold_2"] = self.al2_thr.text()
+        c2["alert_delay_2"] = self.al2_del.text()
+        c2["alert_cooldown_2"] = self.al2_cool.text()
+        
         style = self.combo_style.currentText()
-        self.parent_app.meter1.config["button_style"] = style
-        self.parent_app.meter1.save_config()
+        c1["button_style"] = style
+        c2["button_style"] = style
         self.parent_app.meter1.update_button_styles(style)
         self.parent_app.meter2.update_button_styles(style)
+        
+        self.parent_app.meter1.save_config()
+        self.parent_app.meter2.save_config()
+        
+        QMessageBox.information(self, "Success", "All settings saved successfully.")
 
 class MeterApp(QMainWindow):
+
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Apera Dual-Meter Control Center (PyQt6)")
         self.resize(1400, 800)
+        
+
         
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -1274,11 +1417,21 @@ class MeterApp(QMainWindow):
             if state2_mid: self.meter2.mid_splitter.restoreState(QByteArray.fromHex(state2_mid.encode()))
         except Exception: pass
 
-    def restart_app(self):
+    def restart_app(self, checked=False):
         import sys
         import subprocess
-        self.close()
-        subprocess.Popen([sys.executable] + sys.argv, close_fds=True)
+        import os
+        
+        # If self.close() returns False, the user canceled the closing (e.g. unsaved data)
+        if not self.close():
+            return
+            
+        if getattr(sys, 'frozen', False):
+            args = [sys.executable] + sys.argv[1:]
+        else:
+            args = [sys.executable] + sys.argv
+            
+        subprocess.Popen(args)
         QApplication.quit()
 
     def get_used_ports(self):
