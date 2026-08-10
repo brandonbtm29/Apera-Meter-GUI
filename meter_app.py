@@ -446,9 +446,18 @@ class MeterController(QWidget):
             name = t.get("name", "")
             val = t.get("value", "")
             if name:
-                ent = QLineEdit(old_values.get(name, val))
+                saved_val = self.config.get(f"token_{name}_{self.meter_id}", val)
+                ent = QLineEdit(old_values.get(name, saved_val))
+                ent.textChanged.connect(lambda text, n=name: self.save_token(n, text))
                 self.l_tokens.addRow(name + ":", ent)
                 self.token_inputs[name] = ent
+                
+        # load saved custom tokens on startup if old_values is empty (initial load)
+        if not old_values:
+            saved_customs = self.config.get(f"custom_tokens_{self.meter_id}", [])
+            for name in saved_customs:
+                if name not in self.token_inputs:
+                    old_values[name] = self.config.get(f"token_{name}_{self.meter_id}", "")
                 
         # restore custom tokens
         for name, val in old_values.items():
@@ -463,13 +472,17 @@ class MeterController(QWidget):
                 QMessageBox.warning(self, "Warning", "Token already exists!")
                 return
             self.add_custom_token_ui(name, "")
+            self.save_custom_tokens()
             
     def add_custom_token_ui(self, name, value):
         row_widget = QWidget()
         row_layout = QHBoxLayout(row_widget)
         row_layout.setContentsMargins(0, 0, 0, 0)
         
-        ent = QLineEdit(value)
+        saved_val = self.config.get(f"token_{name}_{self.meter_id}", value)
+        if value: saved_val = value # prefer in-memory value if passed
+        ent = QLineEdit(saved_val)
+        ent.textChanged.connect(lambda text, n=name: self.save_token(n, text))
         btn_del = QPushButton("X")
         btn_del.setFixedWidth(25)
         btn_del.setStyleSheet("background-color: #e74c3c; color: white;")
@@ -481,9 +494,28 @@ class MeterController(QWidget):
         self.l_tokens.addRow(name + ":", row_widget)
         self.token_inputs[name] = ent
         
+    def save_token(self, name, text):
+        self.config[f"token_{name}_{self.meter_id}"] = text
+        self.save_config()
+
+    def save_custom_tokens(self):
+        customs = []
+        default_names = ["Column Name", "Material", "Flow rate", "Bed length", "Run #"]
+        global_tokens = getattr(self, 'app_controller', None) and self.app_controller.shared_config.get("global_tokens", None)
+        if global_tokens:
+            default_names = [t.get("name", "") for t in global_tokens if t.get("name")]
+            
+        if hasattr(self, 'token_inputs'):
+            for name in self.token_inputs:
+                if name not in default_names:
+                    customs.append(name)
+        self.config[f"custom_tokens_{self.meter_id}"] = customs
+        self.save_config()
+
     def remove_custom_token(self, name):
         if name in self.token_inputs:
             self.token_inputs.pop(name)
+            self.save_custom_tokens()
             self.refresh_tokens()
 
     def toggle_global_template(self):
