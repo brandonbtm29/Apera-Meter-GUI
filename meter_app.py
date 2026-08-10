@@ -386,7 +386,7 @@ class MeterController(QWidget):
         right_scroll.setWidgetResizable(True)
         
         left_scroll.setMinimumWidth(250)
-        right_scroll.setMinimumWidth(250)
+        right_scroll.setMinimumWidth(360)
         
         # Add to main splitter
         self.main_splitter.addWidget(left_scroll)
