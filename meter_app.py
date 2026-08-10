@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QSplitter, QScrollArea, QLabel, QPushButton,
     QCheckBox, QLineEdit, QComboBox, QTextEdit, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QFileDialog, QInputDialog,
-    QFormLayout, QFrame, QDialog, QGroupBox, QGridLayout,
+    QFormLayout, QFrame, QDialog, QGroupBox, QGridLayout, QListWidget, QStackedWidget,
     QButtonGroup, QRadioButton
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
@@ -1354,20 +1354,30 @@ class MeterController(QWidget):
                 QMessageBox.critical(self, "Error", f"Export failed! {e}")
 
 
-class SettingsTab(QScrollArea):
+class SettingsTab(QWidget):
     def __init__(self, parent_app):
         super().__init__()
         self.parent_app = parent_app
-        self.setWidgetResizable(True)
         
-        content_widget = QWidget()
-        layout = QVBoxLayout(content_widget)
-        layout.setContentsMargins(20, 20, 20, 20)
+        main_layout = QHBoxLayout(self)
+        
+        # Sidebar
+        self.sidebar = QListWidget()
+        self.sidebar.setMaximumWidth(220)
+        self.sidebar.setStyleSheet("QListWidget { font-size: 14px; } QListWidget::item { padding: 10px; }")
+        
+        # Stack
+        self.stack = QStackedWidget()
+        
+        main_layout.addWidget(self.sidebar)
+        
+        # Right side content area
+        right_layout = QVBoxLayout()
+        right_layout.addWidget(self.stack)
         
         # 1. Global Saving Settings
-        gb_global = CollapsibleBox("Global Saving Settings")
-        gb_global.setFont(QFont("Arial", 11, QFont.Weight.Bold))
-        l_global = QVBoxLayout(gb_global)
+        page_global = QWidget()
+        l_global = QVBoxLayout(page_global)
         
         dir_layout = QHBoxLayout()
         self.lbl_folder = QLabel(self.parent_app.meter1.config.get("global_default_save_folder", "Data"))
@@ -1401,13 +1411,14 @@ class SettingsTab(QScrollArea):
         self.auto_sync_chk = QCheckBox("Auto-Sync Time on Connect (All Meters)")
         self.auto_sync_chk.setChecked(self.parent_app.meter1.config.get("global_auto_sync", False))
         l_global.addWidget(self.auto_sync_chk)
+        l_global.addStretch()
         
-        layout.addWidget(gb_global)
+        self.sidebar.addItem("🌍 Global Saving Settings")
+        self.stack.addWidget(page_global)
         
         # 2. Meter 1 Settings
-        gb_m1 = CollapsibleBox("Meter 1 Settings & Alerts")
-        gb_m1.setFont(QFont("Arial", 11, QFont.Weight.Bold))
-        l_m1 = QFormLayout(gb_m1)
+        page_m1 = QWidget()
+        l_m1 = QFormLayout(page_m1)
         self.lbl_dir1 = QLabel(self.parent_app.meter1.config.get(f"default_save_location_1", "Not Set"))
         btn_dir1 = QPushButton("Browse...")
         btn_dir1.clicked.connect(lambda checked=False: self.choose_meter_dir(1, self.lbl_dir1))
@@ -1431,12 +1442,13 @@ class SettingsTab(QScrollArea):
         l_m1.addRow("Baseline Delay (Minutes):", self.al1_del)
         l_m1.addRow("Cooldown (Minutes):", self.al1_cool)
         l_m1.addRow("", btn_test1)
-        layout.addWidget(gb_m1)
+        
+        self.sidebar.addItem("📈 Meter 1 Settings")
+        self.stack.addWidget(page_m1)
         
         # 3. Meter 2 Settings
-        gb_m2 = CollapsibleBox("Meter 2 Settings & Alerts")
-        gb_m2.setFont(QFont("Arial", 11, QFont.Weight.Bold))
-        l_m2 = QFormLayout(gb_m2)
+        page_m2 = QWidget()
+        l_m2 = QFormLayout(page_m2)
         self.lbl_dir2 = QLabel(self.parent_app.meter2.config.get(f"default_save_location_2", "Not Set"))
         btn_dir2 = QPushButton("Browse...")
         btn_dir2.clicked.connect(lambda checked=False: self.choose_meter_dir(2, self.lbl_dir2))
@@ -1460,12 +1472,13 @@ class SettingsTab(QScrollArea):
         l_m2.addRow("Baseline Delay (Minutes):", self.al2_del)
         l_m2.addRow("Cooldown (Minutes):", self.al2_cool)
         l_m2.addRow("", btn_test2)
-        layout.addWidget(gb_m2)
+        
+        self.sidebar.addItem("📉 Meter 2 Settings")
+        self.stack.addWidget(page_m2)
         
         # 4. App Preferences
-        gb_app = CollapsibleBox("Application Preferences")
-        gb_app.setFont(QFont("Arial", 11, QFont.Weight.Bold))
-        l_app = QVBoxLayout(gb_app)
+        page_app = QWidget()
+        l_app = QVBoxLayout(page_app)
         
         style_layout = QHBoxLayout()
         style_layout.addWidget(QLabel("Action Button Style:"))
@@ -1479,16 +1492,20 @@ class SettingsTab(QScrollArea):
         btn_restart.setStyleSheet("background-color: #8e44ad; color: white; padding: 10px; font-weight: bold;")
         btn_restart.clicked.connect(self.parent_app.restart_app)
         l_app.addWidget(btn_restart)
-        layout.addWidget(gb_app)
+        l_app.addStretch()
         
-        # Save Button
+        self.sidebar.addItem("⚙ Application Preferences")
+        self.stack.addWidget(page_app)
+        
+        self.sidebar.currentRowChanged.connect(self.stack.setCurrentIndex)
+        
+        # Save Button at the bottom of the right side layout
         btn_save = QPushButton("💾 Save All Settings")
         btn_save.setStyleSheet("background-color: #3498db; color: white; padding: 12px; font-size: 14px; font-weight: bold;")
         btn_save.clicked.connect(self.save_all)
-        layout.addWidget(btn_save)
+        right_layout.addWidget(btn_save)
         
-        layout.addStretch()
-        self.setWidget(content_widget)
+        main_layout.addLayout(right_layout)
 
     def choose_global_dir(self, checked=False):
         d = QFileDialog.getExistingDirectory(self, "Select Global Directory")
@@ -1552,11 +1569,11 @@ class MeterApp(QMainWindow):
         self.meter1 = MeterController(meter_id=1, parent_app=self)
         self.meter2 = MeterController(meter_id=2, parent_app=self)
         
-        self.tabs.addTab(self.meter1, "Meter 1")
-        self.tabs.addTab(self.meter2, "Meter 2")
-        
         self.settings_tab = SettingsTab(self)
         self.tabs.addTab(self.settings_tab, "Settings")
+        
+        self.tabs.addTab(self.meter1, "Meter 1")
+        self.tabs.addTab(self.meter2, "Meter 2")
         
         try:
             if "app_geometry" in self.meter1.config:
