@@ -1307,7 +1307,7 @@ class SettingsTab(QScrollArea):
         
         l_global.addWidget(QLabel("Click to insert token:"))
         grid_buttons = QGridLayout()
-        tokens = ["Date", "Time", "Meter ID", "Column Name", "Material", "Flow rate (ml/min)", "Bed length (cm)", "Run #"]
+        tokens = ["Date", "Time", "Start Date", "Start Time", "Meter ID", "Column Name", "Material", "Flow rate (ml/min)", "Bed length (cm)", "Run #"]
         for i, tok in enumerate(tokens):
             btn = QPushButton(f"<{tok}>")
             btn.clicked.connect(lambda checked, t=tok: self.ent_template.insert(f"<{t}>"))
