@@ -533,8 +533,15 @@ class MeterController(QWidget):
             for name, ent in self.token_inputs.items():
                 s = s.replace(f"<{name}>", ent.text())
         s = s.replace("<Meter ID>", str(self.meter_id))
-        s = s.replace("<Date>", datetime.datetime.now().strftime("%Y-%m-%d"))
-        s = s.replace("<Time>", datetime.datetime.now().strftime("%H%M%S"))
+        
+        now = datetime.datetime.now()
+        start_dt = getattr(self, 'session_start_time', None) or now
+        
+        s = s.replace("<Start Date>", start_dt.strftime("%Y-%m-%d"))
+        s = s.replace("<Start Time>", start_dt.strftime("%H%M%S"))
+        s = s.replace("<Date>", now.strftime("%Y-%m-%d"))
+        s = s.replace("<Time>", now.strftime("%H%M%S"))
+        
         # Strip remaining unresolved tokens
         s = re.sub(r'<[^>]+>', '', s)
         # Sanitize invalid Windows filename characters
@@ -1257,6 +1264,11 @@ class MeterController(QWidget):
                 self.lbl_status.setText(f"Status: Exported to Excel!")
             self.unsaved_changes = False
         except Exception as e:
+            try:
+                with open(os.path.expanduser("~/autosave_error.log"), "a") as f:
+                    import traceback
+                    f.write(f"{datetime.datetime.now()}: {str(e)}\n{traceback.format_exc()}\n")
+            except: pass
             if not auto:
                 QMessageBox.critical(self, "Error", f"Export failed! {e}")
 
