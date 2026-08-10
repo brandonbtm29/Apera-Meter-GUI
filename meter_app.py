@@ -1208,7 +1208,6 @@ class MeterController(QWidget):
         if not template.strip(): template = "<Meter ID>_<Date>_<Time>"
         filename = self.get_resolved_string(template)
         if not filename.endswith(".xlsx"): filename += ".xlsx"
-        filename = filename.replace(' ', '_')
         
         if not docs or not os.path.isdir(docs): docs = os.path.expanduser("~/Documents")
         filepath = os.path.join(docs, filename)
