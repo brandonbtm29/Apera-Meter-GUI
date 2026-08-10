@@ -527,6 +527,7 @@ class MeterController(QWidget):
 
     def get_resolved_string(self, template):
         import datetime
+        import re
         s = template
         if hasattr(self, 'token_inputs'):
             for name, ent in self.token_inputs.items():
@@ -534,6 +535,10 @@ class MeterController(QWidget):
         s = s.replace("<Meter ID>", str(self.meter_id))
         s = s.replace("<Date>", datetime.datetime.now().strftime("%Y-%m-%d"))
         s = s.replace("<Time>", datetime.datetime.now().strftime("%H%M%S"))
+        # Strip remaining unresolved tokens
+        s = re.sub(r'<[^>]+>', '', s)
+        # Sanitize invalid Windows filename characters
+        s = re.sub(r'[<>:"/\\|?*]', '_', s)
         return s
 
     def toggle_record(self, checked=False):
