@@ -57,6 +57,36 @@ class WorkerSignals(QObject):
     update_device_info = pyqtSignal(str, str)
 
 
+class CollapsibleBox(QWidget):
+    def __init__(self, title, parent=None):
+        super().__init__(parent)
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(0)
+        
+        self.btn_toggle = QPushButton(f"▼ {title}")
+        self.btn_toggle.setStyleSheet("text-align: left; font-weight: bold; padding: 5px; background-color: transparent; border: none;")
+        self.btn_toggle.setCheckable(True)
+        self.btn_toggle.setChecked(False)  # False = expanded
+        self.btn_toggle.toggled.connect(self.on_toggle)
+        self.layout.addWidget(self.btn_toggle)
+        
+        self.content_widget = QWidget()
+        self.layout.addWidget(self.content_widget)
+        
+        self.title_text = title
+        
+    def setLayout(self, layout):
+        layout.setContentsMargins(5, 5, 5, 5)
+        self.content_widget.setLayout(layout)
+        
+    def on_toggle(self, checked):
+        self.btn_toggle.setText(f"▶ {self.title_text}" if checked else f"▼ {self.title_text}")
+        self.content_widget.setVisible(not checked)
+
+    def set_collapsed(self, collapsed=True):
+        self.btn_toggle.setChecked(collapsed)
+
 class MeterController(QWidget):
     def __init__(self, meter_id=1, parent_app=None):
         super().__init__()
@@ -300,7 +330,7 @@ class MeterController(QWidget):
         right_layout.addWidget(self.btn_connect)
 
         # Metadata Tokens
-        self.gb_tokens = QGroupBox("Metadata Tokens")
+        self.gb_tokens = CollapsibleBox("Metadata Tokens")
         self.tokens_outer_layout = QVBoxLayout(self.gb_tokens)
         self.l_tokens = QFormLayout()
         self.tokens_outer_layout.addLayout(self.l_tokens)
@@ -312,7 +342,7 @@ class MeterController(QWidget):
         right_layout.addWidget(self.gb_tokens)
 
         # --- Data Recording & Export ---
-        gb_save = QGroupBox("Data Recording & Export")
+        gb_save = CollapsibleBox("Data Recording & Export")
         l_save = QFormLayout(gb_save)
         
         self.chk_use_global_template = QCheckBox("Use Global Save Settings")
@@ -1335,7 +1365,7 @@ class SettingsTab(QScrollArea):
         layout.setContentsMargins(20, 20, 20, 20)
         
         # 1. Global Saving Settings
-        gb_global = QGroupBox("Global Saving Settings")
+        gb_global = CollapsibleBox("Global Saving Settings")
         gb_global.setFont(QFont("Arial", 11, QFont.Weight.Bold))
         l_global = QVBoxLayout(gb_global)
         
@@ -1375,7 +1405,7 @@ class SettingsTab(QScrollArea):
         layout.addWidget(gb_global)
         
         # 2. Meter 1 Settings
-        gb_m1 = QGroupBox("Meter 1 Settings & Alerts")
+        gb_m1 = CollapsibleBox("Meter 1 Settings & Alerts")
         gb_m1.setFont(QFont("Arial", 11, QFont.Weight.Bold))
         l_m1 = QFormLayout(gb_m1)
         self.lbl_dir1 = QLabel(self.parent_app.meter1.config.get(f"default_save_location_1", "Not Set"))
@@ -1404,7 +1434,7 @@ class SettingsTab(QScrollArea):
         layout.addWidget(gb_m1)
         
         # 3. Meter 2 Settings
-        gb_m2 = QGroupBox("Meter 2 Settings & Alerts")
+        gb_m2 = CollapsibleBox("Meter 2 Settings & Alerts")
         gb_m2.setFont(QFont("Arial", 11, QFont.Weight.Bold))
         l_m2 = QFormLayout(gb_m2)
         self.lbl_dir2 = QLabel(self.parent_app.meter2.config.get(f"default_save_location_2", "Not Set"))
@@ -1433,7 +1463,7 @@ class SettingsTab(QScrollArea):
         layout.addWidget(gb_m2)
         
         # 4. App Preferences
-        gb_app = QGroupBox("Application Preferences")
+        gb_app = CollapsibleBox("Application Preferences")
         gb_app.setFont(QFont("Arial", 11, QFont.Weight.Bold))
         l_app = QVBoxLayout(gb_app)
         
