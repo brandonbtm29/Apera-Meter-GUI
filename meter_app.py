@@ -321,6 +321,7 @@ class MeterController(QWidget):
         l_save.addRow(self.chk_use_global_template)
         
         self.ent_save_template = QLineEdit(self.config.get(f"save_template_{self.meter_id}", ""))
+        self.ent_save_template.setMinimumWidth(50)
         l_save.addRow("Filename Template:", self.ent_save_template)
         
         self.combo_autosave = QComboBox()
@@ -330,6 +331,7 @@ class MeterController(QWidget):
         
         self.ent_autosave_min = QLineEdit(self.config.get(f"autosave_min_{self.meter_id}", "5.0"))
         self.ent_autosave_min.setPlaceholderText("Minutes")
+        self.ent_autosave_min.setMinimumWidth(50)
         l_save.addRow("Interval (min):", self.ent_autosave_min)
         
         btn_export = QPushButton("💾 Export to Excel")
@@ -361,6 +363,7 @@ class MeterController(QWidget):
         right_layout.addWidget(lbl_notes)
         self.txt_notes = QTextEdit()
         self.txt_notes.setMinimumHeight(200)
+        self.txt_notes.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.txt_notes.setText(self.config.get(f"meter_notes_{self.meter_id}", ""))
         self.txt_notes.textChanged.connect(self.save_notes)
         right_layout.addWidget(self.txt_notes)
@@ -482,6 +485,7 @@ class MeterController(QWidget):
         saved_val = self.config.get(f"token_{name}_{self.meter_id}", value)
         if value: saved_val = value # prefer in-memory value if passed
         ent = QLineEdit(saved_val)
+        ent.setMinimumWidth(50)
         ent.textChanged.connect(lambda text, n=name: self.save_token(n, text))
         btn_del = QPushButton("X")
         btn_del.setFixedWidth(25)
