@@ -334,10 +334,19 @@ class MeterController(QWidget):
         self.ent_autosave_min.setMinimumWidth(50)
         l_save.addRow("Interval (min):", self.ent_autosave_min)
         
-        btn_export = QPushButton("💾 Export to Excel")
+        btn_layout = QHBoxLayout()
+        btn_export = QPushButton("💾 Export As...")
         btn_export.setStyleSheet("background-color: #27ae60; color: white;")
         btn_export.clicked.connect(lambda checked=False: self.save_excel(auto=False))
-        l_save.addRow(btn_export)
+        
+        btn_quick_save = QPushButton("⚡ Quick Save")
+        btn_quick_save.setStyleSheet("background-color: #2980b9; color: white;")
+        btn_quick_save.setToolTip("Instantly overwrite the target Auto-Save file without prompting.")
+        btn_quick_save.clicked.connect(lambda checked=False: self.save_excel(auto=True))
+        
+        btn_layout.addWidget(btn_export)
+        btn_layout.addWidget(btn_quick_save)
+        l_save.addRow(btn_layout)
         
         self.combo_autosave.currentIndexChanged.connect(self.toggle_autosave_interval)
         self.combo_autosave.currentIndexChanged.connect(self._save_autosave_config)
