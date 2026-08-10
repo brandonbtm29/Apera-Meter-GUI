@@ -444,16 +444,24 @@ class MeterController(QWidget):
         self.token_inputs = {}
         
         default_tokens = [
-            {"name": "Column Name", "value": ""},
+            {"name": "Column #/Name", "value": ""},
             {"name": "Material", "value": ""},
             {"name": "Flow rate", "value": ""},
             {"name": "Bed length", "value": ""},
-            {"name": "Run #", "value": ""}
+            {"name": "Run #", "value": ""},
+            {"name": "(De)Sorption", "value": ""}
         ]
         
         global_tokens = getattr(self, 'app_controller', None) and self.app_controller.shared_config.get("global_tokens", None)
         if not global_tokens:
             global_tokens = default_tokens
+        existing_names = [t.get("name") for t in global_tokens if t.get("name")]
+        if "Column Name" in existing_names:
+            for t in global_tokens:
+                if t.get("name") == "Column Name": t["name"] = "Column #/Name"
+        if "(De)Sorption" not in existing_names:
+            global_tokens.append({"name": "(De)Sorption", "value": ""})
+            
         for t in global_tokens:
             name = t.get("name", "")
             val = t.get("value", "")
@@ -510,6 +518,37 @@ class MeterController(QWidget):
     def save_token(self, name, text):
         self.config[f"token_{name}_{self.meter_id}"] = text
         self.save_config()
+
+    def refresh_local_token_buttons(self):
+        while self.local_token_grid.count():
+            item = self.local_token_grid.takeAt(0)
+            if item.widget():
+                item.widget().hide()
+                item.widget().setParent(None)
+                item.widget().deleteLater()
+                
+        base_tokens = ["Date", "Time", "Start Date", "Start Time", "Meter ID"]
+        all_tokens = base_tokens.copy()
+        
+        global_tokens = getattr(self, 'app_controller', None) and self.app_controller.shared_config.get("global_tokens", None)
+        if not global_tokens:
+            global_tokens = [{"name": "Column #/Name"}, {"name": "Material"}, {"name": "Flow rate"}, {"name": "Bed length"}, {"name": "Run #"}, {"name": "(De)Sorption"}]
+        for t in global_tokens:
+            n = t.get("name")
+            if n and n not in all_tokens: all_tokens.append(n)
+            
+        for name in getattr(self, 'token_inputs', {}):
+            if name not in all_tokens: all_tokens.append(name)
+            
+        row = 0; col = 0
+        for tok in all_tokens:
+            btn = QPushButton(f"<{tok}>")
+            btn.clicked.connect(lambda checked, t=tok: self.ent_save_template.insert(f"<{t}>"))
+            self.local_token_grid.addWidget(btn, row, col)
+            col += 1
+            if col > 3:
+                col = 0
+                row += 1
 
     def save_custom_tokens(self):
         customs = []
@@ -1315,7 +1354,14 @@ class SettingsTab(QScrollArea):
         
         l_global.addWidget(QLabel("Click to insert token:"))
         grid_buttons = QGridLayout()
-        tokens = ["Date", "Time", "Start Date", "Start Time", "Meter ID", "Column Name", "Material", "Flow rate (ml/min)", "Bed length (cm)", "Run #"]
+        
+        base_tokens = ["Date", "Time", "Start Date", "Start Time", "Meter ID"]
+        global_tokens = getattr(self.parent_app, "meter1", self.parent_app).config.get("global_tokens", [])
+        custom_names = [t.get("name") for t in global_tokens if t.get("name")]
+        if not custom_names:
+            custom_names = ["Column #/Name", "Material", "Flow rate", "Bed length", "Run #", "(De)Sorption"]
+        
+        tokens = base_tokens + [n for n in custom_names if n not in base_tokens]
         for i, tok in enumerate(tokens):
             btn = QPushButton(f"<{tok}>")
             btn.clicked.connect(lambda checked, t=tok: self.ent_template.insert(f"<{t}>"))
