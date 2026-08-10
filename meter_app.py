@@ -904,16 +904,46 @@ class MeterController(QWidget):
                 elif dot == 3: val_float = DP / 1000.0
                 
                 cond_us, cond_ms = "", ""
+                cond_us_val = val_float
                 if mode == 2:
                     u_val = b + 10
                     if u_val == 10: 
                         cond_ms = f"{val_float:.3f}"
                         cond_us = f"{val_float * 1000:.1f}"
+                        cond_us_val = val_float * 1000
                     elif u_val == 11: 
                         cond_ms = f"{val_float / 1000:.3f}"
                         cond_us = f"{val_float:.1f}"
+                        cond_us_val = val_float
                 else:
                     cond_us = str(val_float)
+                
+                if cond_us_val > 0:
+                    curr_log = math.log10(cond_us_val)
+                    if self.config.get(f"alert_enabled_{self.meter_id}", False):
+                        webhook_url = self.config.get(f"alert_webhook_{self.meter_id}", "")
+                        try: threshold = float(self.config.get(f"alert_threshold_{self.meter_id}", 0.5))
+                        except: threshold = 0.5
+                        try: cooldown_min = float(self.config.get(f"alert_cooldown_{self.meter_id}", 5.0))
+                        except: cooldown_min = 5.0
+                        try: delay_min = float(self.config.get(f"alert_delay_{self.meter_id}", 5.0))
+                        except: delay_min = 5.0
+                        
+                        if self.alert_start_time is None:
+                            self.alert_start_time = time.time()
+                            
+                        if time.time() - self.alert_start_time < delay_min * 60:
+                            self.baseline_log_cond = curr_log
+                        else:
+                            if self.baseline_log_cond is None:
+                                self.baseline_log_cond = curr_log
+                            
+                            if abs(curr_log - self.baseline_log_cond) >= threshold:
+                                if time.time() - self.last_alert_time > cooldown_min * 60:
+                                    self.last_alert_time = time.time()
+                                    msg = f"🔔 **Meter {self.meter_id} Alert**\nConductivity changed significantly!\nPrevious baseline log: {self.baseline_log_cond:.3f}\nCurrent log: {curr_log:.3f}\nCurrent value: {cond_us_val:.1f} µS/cm"
+                                    self.baseline_log_cond = curr_log
+                                    self.send_discord_alert(webhook_url, msg)
                 
                 dt_str = f"20{yy:02d}-{mt:02d}-{dd:02d} {hh:02d}:{mm:02d}:{ss:02d}"
                 dt_obj = datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
