@@ -563,7 +563,7 @@ class MeterController(QWidget):
             self.btn_record.setStyleSheet("background-color: #2ecc71; color: white;")
             self.lbl_status.setText("Status: Paused")
             
-            if self.combo_autosave.currentText() == "On Auto-Stop":
+            if self.combo_autosave.currentText() in ["On Auto-Stop", "Every X Minutes"]:
                 self.save_excel(auto=True)
                 self.txt_notes.append("[Auto-Save] Data saved to directory automatically upon pause.")
             self.ax.set_title(f"Live (Not Recording): Conductivity (Meter {self.meter_id})")

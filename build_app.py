@@ -13,6 +13,7 @@ def build():
     print("Running PyInstaller...")
     cmd = [
         "pyinstaller",
+        "-y",
         "--noconsole",
         "--onefile",
         "--name", "Apera_Meter_GUI",
