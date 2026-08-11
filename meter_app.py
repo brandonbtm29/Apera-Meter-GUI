@@ -1375,9 +1375,33 @@ class SettingsTab(QWidget):
         right_layout = QVBoxLayout()
         right_layout.addWidget(self.stack)
         
-        # 1. Global Saving Settings
+        # 1. Global & Application Settings
         page_global = QWidget()
         l_global = QVBoxLayout(page_global)
+        
+        # --- App Preferences ---
+        gb_app = CollapsibleBox("Application Preferences")
+        gb_app.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        l_app_inner = QVBoxLayout(gb_app)
+        
+        style_layout = QHBoxLayout()
+        style_layout.addWidget(QLabel("Action Button Style:"))
+        self.combo_style = QComboBox()
+        self.combo_style.addItems(["Icon + Text", "Icon Only"])
+        self.combo_style.setCurrentText(self.parent_app.meter1.config.get("button_style", "Icon + Text"))
+        style_layout.addWidget(self.combo_style)
+        l_app_inner.addLayout(style_layout)
+        
+        btn_restart = QPushButton("🔄 Restart Application")
+        btn_restart.setStyleSheet("background-color: #8e44ad; color: white; padding: 10px; font-weight: bold;")
+        btn_restart.clicked.connect(self.parent_app.restart_app)
+        l_app_inner.addWidget(btn_restart)
+        l_global.addWidget(gb_app)
+        
+        # --- Global Saving Settings ---
+        gb_save = CollapsibleBox("Global Saving Settings")
+        gb_save.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        l_save_inner = QVBoxLayout(gb_save)
         
         dir_layout = QHBoxLayout()
         self.lbl_folder = QLabel(self.parent_app.meter1.config.get("global_default_save_folder", "Data"))
@@ -1386,13 +1410,13 @@ class SettingsTab(QWidget):
         dir_layout.addWidget(QLabel("Default Global Directory:"))
         dir_layout.addWidget(self.lbl_folder)
         dir_layout.addWidget(btn_folder)
-        l_global.addLayout(dir_layout)
+        l_save_inner.addLayout(dir_layout)
         
-        l_global.addWidget(QLabel("Filename Template:"))
+        l_save_inner.addWidget(QLabel("Filename Template:"))
         self.ent_template = QLineEdit(self.parent_app.meter1.config.get("global_filename_template", "<Meter ID>_<Date>_<Time>"))
-        l_global.addWidget(self.ent_template)
+        l_save_inner.addWidget(self.ent_template)
         
-        l_global.addWidget(QLabel("Click to insert token:"))
+        l_save_inner.addWidget(QLabel("Click to insert token:"))
         grid_buttons = QGridLayout()
         
         base_tokens = ["Date", "Time", "Start Date", "Start Time", "Meter ID"]
@@ -1406,14 +1430,16 @@ class SettingsTab(QWidget):
             btn = QPushButton(f"<{tok}>")
             btn.clicked.connect(lambda checked, t=tok: self.ent_template.insert(f"<{t}>"))
             grid_buttons.addWidget(btn, i // 4, i % 4)
-        l_global.addLayout(grid_buttons)
+        l_save_inner.addLayout(grid_buttons)
         
         self.auto_sync_chk = QCheckBox("Auto-Sync Time on Connect (All Meters)")
         self.auto_sync_chk.setChecked(self.parent_app.meter1.config.get("global_auto_sync", False))
-        l_global.addWidget(self.auto_sync_chk)
+        l_save_inner.addWidget(self.auto_sync_chk)
+        l_global.addWidget(gb_save)
+        
         l_global.addStretch()
         
-        self.sidebar.addItem("🌍 Global Saving Settings")
+        self.sidebar.addItem("🌍 Global & Application Settings")
         self.stack.addWidget(page_global)
         
         # 2. Meter 1 Settings
@@ -1476,27 +1502,6 @@ class SettingsTab(QWidget):
         self.sidebar.addItem("📉 Meter 2 Settings")
         self.stack.addWidget(page_m2)
         
-        # 4. App Preferences
-        page_app = QWidget()
-        l_app = QVBoxLayout(page_app)
-        
-        style_layout = QHBoxLayout()
-        style_layout.addWidget(QLabel("Action Button Style:"))
-        self.combo_style = QComboBox()
-        self.combo_style.addItems(["Icon + Text", "Icon Only"])
-        self.combo_style.setCurrentText(self.parent_app.meter1.config.get("button_style", "Icon + Text"))
-        style_layout.addWidget(self.combo_style)
-        l_app.addLayout(style_layout)
-        
-        btn_restart = QPushButton("🔄 Restart Application")
-        btn_restart.setStyleSheet("background-color: #8e44ad; color: white; padding: 10px; font-weight: bold;")
-        btn_restart.clicked.connect(self.parent_app.restart_app)
-        l_app.addWidget(btn_restart)
-        l_app.addStretch()
-        
-        self.sidebar.addItem("⚙ Application Preferences")
-        self.stack.addWidget(page_app)
-        
         self.sidebar.currentRowChanged.connect(self.stack.setCurrentIndex)
         
         # Save Button at the bottom of the right side layout
@@ -1552,7 +1557,6 @@ class SettingsTab(QWidget):
         self.parent_app.meter2.save_config()
         
         QMessageBox.information(self, "Success", "All settings saved successfully.")
-
 class MeterApp(QMainWindow):
 
 
