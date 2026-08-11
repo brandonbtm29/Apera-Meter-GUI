@@ -1382,7 +1382,8 @@ class SettingsTab(QWidget):
         # --- App Preferences ---
         gb_app = CollapsibleBox("Application Preferences")
         gb_app.setFont(QFont("Arial", 11, QFont.Weight.Bold))
-        l_app_inner = QVBoxLayout(gb_app)
+        l_app_inner = QVBoxLayout()
+        gb_app.setLayout(l_app_inner)
         
         style_layout = QHBoxLayout()
         style_layout.addWidget(QLabel("Action Button Style:"))
@@ -1401,7 +1402,8 @@ class SettingsTab(QWidget):
         # --- Global Saving Settings ---
         gb_save = CollapsibleBox("Global Saving Settings")
         gb_save.setFont(QFont("Arial", 11, QFont.Weight.Bold))
-        l_save_inner = QVBoxLayout(gb_save)
+        l_save_inner = QVBoxLayout()
+        gb_save.setLayout(l_save_inner)
         
         dir_layout = QHBoxLayout()
         self.lbl_folder = QLabel(self.parent_app.meter1.config.get("global_default_save_folder", "Data"))
