@@ -1058,6 +1058,8 @@ class MeterController(QWidget):
                         cond_ms = f"{val_float / 1000:.3f}"
                         cond_us = f"{val_float:.1f}"
                         cond_us_val = val_float
+                    try: self.last_serial_cond_ms = float(cond_ms)
+                    except: pass
                 else:
                     cond_us = str(val_float)
                 
@@ -2195,6 +2197,38 @@ class MeterApp(QMainWindow):
         self.btn_calibration_burst.setText("⏳ Waiting for Serial...")
         self.btn_calibration_burst.setEnabled(False)
 
+    def _sanitize_ocr_value(self, ocr_val, last_serial_ms):
+        try:
+            if ocr_val == 0.0 or last_serial_ms == 0.0 or last_serial_ms is None:
+                return ocr_val
+                
+            raw_str = str(ocr_val).replace('.', '')
+            raw_int = int(raw_str)
+            if raw_int == 0: return 0.0
+            raw_str = str(raw_int)
+            
+            possible_ms_values = []
+            for i in range(len(raw_str) + 1):
+                if i == 0:
+                    s = "0." + raw_str
+                elif i == len(raw_str):
+                    s = raw_str
+                else:
+                    s = raw_str[:i] + "." + raw_str[i:]
+                try:
+                    possible_ms_values.append(float(s))
+                except: pass
+                
+            best_val = min(possible_ms_values, key=lambda x: abs(x - last_serial_ms))
+            
+            if abs(best_val - last_serial_ms) / last_serial_ms > 0.5:
+                return ocr_val
+                
+            return best_val
+        except Exception as e:
+            print(f"Sanitize error: {e}")
+            return ocr_val
+
     def on_ocr_readings(self, readings):
         import time
         import datetime
@@ -2209,6 +2243,8 @@ class MeterApp(QMainWindow):
         
         if len(readings) > 0 and readings[0] is not None:
             c1, _ = readings[0]
+            last_ms = getattr(self.meter1, 'last_serial_cond_ms', 0.0)
+            c1 = self._sanitize_ocr_value(c1, last_ms)
             t1_display = getattr(self.meter1, 'last_serial_temp', "0.0")
             row_data1 = (dt_str, "OCR", str(c1*1000), str(c1), t1_display, "0")
             if self.meter1.is_recording:
@@ -2216,6 +2252,8 @@ class MeterApp(QMainWindow):
                 
         if len(readings) > 1 and readings[1] is not None:
             c2, _ = readings[1]
+            last_ms = getattr(self.meter2, 'last_serial_cond_ms', 0.0)
+            c2 = self._sanitize_ocr_value(c2, last_ms)
             t2_display = getattr(self.meter2, 'last_serial_temp', "0.0")
             row_data2 = (dt_str, "OCR", str(c2*1000), str(c2), t2_display, "0")
             if self.meter2.is_recording:
