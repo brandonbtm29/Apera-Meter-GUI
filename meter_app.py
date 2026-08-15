@@ -1098,56 +1098,57 @@ class MeterController(QWidget):
                 
                 row_data = (dt_str, mode_str, cond_us, cond_ms, f"{temp_c:.1f}", str(w4))
                 
-                if self.is_recording:
+                is_dn_packet = packet.startswith(b'<DN')
+                if self.is_recording or is_dn_packet:
                     if getattr(self, 'ocr_active', False):
                         # Throttle OCR visual logging to 10s if we wanted to
                         pass
                     self.signals.update_tree.emit(dt_obj, row_data)
                     
-                    # --- SMART DATASET RECORDING LOGIC ---
-                    app = self.parent_app
-                    is_continuous = getattr(app, 'dataset_checkbox', None) and app.dataset_checkbox.isChecked()
-                    is_manual = getattr(app, 'manual_snap_requested', False)
+                # --- SMART DATASET RECORDING LOGIC ---
+                app = self.parent_app
+                is_continuous = getattr(app, 'dataset_checkbox', None) and app.dataset_checkbox.isChecked()
+                is_manual = getattr(app, 'manual_snap_requested', False)
+                
+                if (is_continuous or is_manual) and getattr(app, 'dataset_session_dir', None):
+                    # The physical LCD updates ~Xms AFTER the serial packet is sent.
+                    import time
+                    from PyQt6.QtCore import QTimer
                     
-                    if (is_continuous or is_manual) and getattr(app, 'dataset_session_dir', None):
-                        # The physical LCD updates ~Xms AFTER the serial packet is sent.
-                        import time
-                        from PyQt6.QtCore import QTimer
+                    ts = time.time()
+                    
+                    if is_manual:
+                        app.manual_snap_requested = False
                         
-                        ts = time.time()
-                        
-                        if is_manual:
-                            app.manual_snap_requested = False
-                            
-                        # Retrieve dynamic hardware lag
-                        hw_lag = self.config.get("hardware_lag_ms", 300)
-                        
-                        def capture_delayed_frame(cap_ts=ts, c_ms=cond_ms, r_cond=str(w4), m_id=self.meter_id, m_flag=is_manual):
-                            import cv2
-                            import os
-                            frame = app.ocr_feed_tab.last_frame
-                            if frame is not None:
-                                frame_path = os.path.join(app.dataset_session_dir, "frames", f"frame_{cap_ts}.jpg")
-                                cv2.imwrite(frame_path, frame)
-                                with open(app.dataset_csv_path, "a", encoding="utf-8") as f:
-                                    f.write(f"{cap_ts},{m_id},{c_ms},mS,{r_cond}\n")
-                                    
-                            if m_flag:
-                                try:
-                                    app.btn_manual_snap.setText("📷 Manual Snap (Phase 2)")
-                                    app.btn_manual_snap.setEnabled(True)
-                                except: pass
+                    # Retrieve dynamic hardware lag
+                    hw_lag = self.config.get("hardware_lag_ms", 300)
+                    
+                    def capture_delayed_frame(cap_ts=ts, c_ms=cond_ms, r_cond=str(w4), m_id=self.meter_id, m_flag=is_manual):
+                        import cv2
+                        import os
+                        frame = app.ocr_feed_tab.last_frame
+                        if frame is not None:
+                            frame_path = os.path.join(app.dataset_session_dir, "frames", f"frame_{cap_ts}.jpg")
+                            cv2.imwrite(frame_path, frame)
+                            with open(app.dataset_csv_path, "a", encoding="utf-8") as f:
+                                f.write(f"{cap_ts},{m_id},{c_ms},mS,{r_cond}\n")
                                 
-                        QTimer.singleShot(hw_lag, capture_delayed_frame)
-                        
-                    # --- PHASE 1: CALIBRATION BURST LOGIC ---
-                    if getattr(app, 'calibration_burst_requested', False):
-                        import time
-                        app.calibration_burst_requested = False
-                        app.calibration_burst_meter = self.meter_id
-                        app.calibration_burst_serial_ts = time.time()
-                        app.calibration_burst_screen_val = cond_ms
-                        app.calibration_burst_count = 15 # 15 frames @ 30 FPS = ~500ms burst
+                        if m_flag:
+                            try:
+                                app.btn_manual_snap.setText("📷 Manual Snap (Phase 2)")
+                                app.btn_manual_snap.setEnabled(True)
+                            except: pass
+                            
+                    QTimer.singleShot(hw_lag, capture_delayed_frame)
+                    
+                # --- PHASE 1: CALIBRATION BURST LOGIC ---
+                if getattr(app, 'calibration_burst_requested', False):
+                    import time
+                    app.calibration_burst_requested = False
+                    app.calibration_burst_meter = self.meter_id
+                    app.calibration_burst_serial_ts = time.time()
+                    app.calibration_burst_screen_val = cond_ms
+                    app.calibration_burst_count = 15 # 15 frames @ 30 FPS = ~500ms burst
                         
                         try:
                             app.btn_calibration_burst.setText("Recording Burst...")
