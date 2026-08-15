@@ -1115,7 +1115,6 @@ class MeterController(QWidget):
                 # --- SMART DATASET RECORDING LOGIC ---
                 if (is_continuous or is_manual) and getattr(app, 'dataset_session_dir', None):
                     # The physical LCD updates ~Xms AFTER the serial packet is sent.
-                    import time
                     from PyQt6.QtCore import QTimer
                     
                     ts = time.time()
@@ -1146,7 +1145,6 @@ class MeterController(QWidget):
                     
                 # --- PHASE 1: CALIBRATION BURST LOGIC ---
                 if getattr(app, 'calibration_burst_requested', False):
-                    import time
                     app.calibration_burst_requested = False
                     app.calibration_burst_meter = self.meter_id
                     app.calibration_burst_serial_ts = time.time()
