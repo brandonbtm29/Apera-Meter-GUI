@@ -1805,6 +1805,8 @@ class OCRFeedTab(QWidget):
         self.image_ready.connect(self.set_image)
         self.last_frame = None
         self.current_drawn_rect = None
+        import collections
+        self.frame_buffer = collections.deque(maxlen=30)
 
     def toggle_drawing(self, checked):
         self.image_label.drawing_enabled = checked
@@ -1929,37 +1931,36 @@ class OCRFeedTab(QWidget):
         import cv2
         self.last_frame = frame.copy()
         
+        frame_ts = time.time()
+        self.frame_buffer.append((frame_ts, self.last_frame))
+        
         # Phase 1: Intercept Calibration Burst
         if getattr(self.app, 'calibration_burst_count', 0) > 0:
             self.app.calibration_burst_count -= 1
             
-            meter_id = getattr(self.app, 'calibration_burst_meter', 1)
-            serial_ts = getattr(self.app, 'calibration_burst_serial_ts', 0)
-            screen_val = getattr(self.app, 'calibration_burst_screen_val', "0.0")
-            frame_ts = time.time()
-            
-            roi_imgs, _ = self.app.ocr_pipeline.extract_crops(frame)
-            roi_name = f"m{meter_id}_cond"
-            roi_img = roi_imgs.get(roi_name)
-            
-            if roi_img is not None and roi_img.size > 0:
-                # Resize to CNN input size (128x128)
-                cnn_img = cv2.resize(roi_img, (128, 128))
+            if self.app.calibration_burst_count == 0:
+                meter_id = getattr(self.app, 'calibration_burst_meter', 1)
+                serial_ts = getattr(self.app, 'calibration_burst_serial_ts', 0)
+                screen_val = getattr(self.app, 'calibration_burst_screen_val', "0.0")
                 
-                # Ensure dir exists
                 sess_dir = getattr(self.app, 'calibration_session_dir', None)
                 if not sess_dir:
                     sess_dir = os.path.join(os.getcwd(), f"calibration_session_{int(serial_ts)}")
                     self.app.calibration_session_dir = sess_dir
                     os.makedirs(os.path.join(sess_dir, "extracted_crops"), exist_ok=True)
                 
-                # Save crop directly
-                # Format: screenval_serialts_framets_meterid.jpg
-                filename = f"{screen_val}_{serial_ts:.3f}_{frame_ts:.3f}_{meter_id}.jpg"
-                out_path = os.path.join(sess_dir, "extracted_crops", filename)
-                cv2.imwrite(out_path, cnn_img)
-                
-            if self.app.calibration_burst_count == 0:
+                for f_ts, f_img in list(self.frame_buffer):
+                    roi_imgs, _ = self.app.ocr_pipeline.extract_crops(f_img)
+                    roi_name = f"m{meter_id}_cond"
+                    roi_img = roi_imgs.get(roi_name)
+                    
+                    if roi_img is not None and roi_img.size > 0:
+                        cnn_img = cv2.resize(roi_img, (128, 128))
+                        # Filename: screenval_serialts_framets_meterid.jpg
+                        filename = f"{screen_val}_{serial_ts:.3f}_{f_ts:.3f}_{meter_id}.jpg"
+                        out_path = os.path.join(sess_dir, "extracted_crops", filename)
+                        cv2.imwrite(out_path, cnn_img)
+                        
                 try:
                     self.app.btn_calibration_burst.setText("🎯 Capture Calibration Burst (Phase 1)")
                     self.app.btn_calibration_burst.setEnabled(True)
