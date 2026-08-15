@@ -1,0 +1,432 @@
+import cv2
+import numpy as np
+import threading
+import time
+import os
+import json
+
+try:
+    import torch
+    import torchvision.transforms as transforms
+    from PIL import Image
+    from ocr_model import MeterCNN, tensor_to_string
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
+class MeterOCR:
+    def __init__(self, camera_index=0):
+        self.camera_index = camera_index
+        self.cap = None
+        self.is_running = False
+        self.callbacks = []
+        self.frame_callbacks = []
+        self.last_warp_matrices = [None, None]
+        self.rois = {
+            "m1_cond": None,
+            "m1_temp": None,
+            "m2_cond": None,
+            "m2_temp": None
+        }
+        self.load_rois()
+        
+        self.model = None
+        self.device = None
+        self.transform = None
+        if HAS_TORCH:
+            try:
+                self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                self.model = MeterCNN().to(self.device)
+                if os.path.exists("meter_ocr_model.pt"):
+                    self.model.load_state_dict(torch.load("meter_ocr_model.pt", map_location=self.device, weights_only=True))
+                    self.model.eval()
+                    self.transform = transforms.Compose([
+                        transforms.Resize((128, 128)),
+                        transforms.ToTensor(),
+                        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                    ])
+                    print("CNN Model loaded successfully.")
+                else:
+                    self.model = None
+            except Exception as e:
+                print(f"Failed to load CNN model: {e}")
+                self.model = None
+
+    def save_rois(self):
+        try:
+            with open("global_rois.json", "w") as f:
+                json.dump(self.rois, f)
+        except Exception as e:
+            print(f"Error saving ROIs: {e}")
+
+    def load_rois(self):
+        try:
+            if os.path.exists("global_rois.json"):
+                with open("global_rois.json", "r") as f:
+                    data = json.load(f)
+                    for k in self.rois.keys():
+                        if k in data and data[k] is not None:
+                            roi = data[k]
+                            # Make sure it has 5 elements
+                            if len(roi) == 4:
+                                roi.append(0.0)
+                            self.rois[k] = roi
+        except Exception as e:
+            print(f"Error loading ROIs: {e}")
+        
+    def set_specific_roi(self, name, roi):
+        if name in self.rois:
+            self.rois[name] = roi
+            
+    def set_rois(self, r1, r2, r3, r4):
+        self.rois = {
+            "m1_cond": r1,
+            "m1_temp": r2,
+            "m2_cond": r3,
+            "m2_temp": r4
+        }
+
+    def add_callback(self, cb):
+        self.callbacks.append(cb)
+        
+    def add_frame_callback(self, cb):
+        self.frame_callbacks.append(cb)
+
+    def set_focus(self, val):
+        if self.cap and self.cap.isOpened():
+            if val < 0:
+                self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+            else:
+                self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+                self.cap.set(cv2.CAP_PROP_FOCUS, val)
+
+    def start(self):
+        if self.is_running: return
+        import os
+        if os.name == 'nt':
+            self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+        else:
+            self.cap = cv2.VideoCapture(self.camera_index)
+        # Try to set 4K resolution
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 3840)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)
+        
+        self.is_running = True
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def stop(self):
+        self.is_running = False
+        if self.cap:
+            self.cap.release()
+
+    def _loop(self):
+        last_process = 0
+        while self.is_running:
+            ret, frame = self.cap.read()
+            if not ret:
+                time.sleep(0.05)
+                continue
+                
+            display_frame = frame.copy()
+            now = time.time()
+            if now - last_process >= 1.0:
+                self.process_frame(display_frame)
+                last_process = now
+                
+            for cb in self.frame_callbacks:
+                try:
+                    cb(display_frame)
+                except Exception as e:
+                    pass
+                
+            time.sleep(0.03) # ~30 FPS limit
+            
+    def _order_points(self, pts):
+        rect = np.zeros((4, 2), dtype="float32")
+        s = pts.sum(axis=1)
+        rect[0] = pts[np.argmin(s)] # top-left
+        rect[2] = pts[np.argmax(s)] # bottom-right
+        diff = np.diff(pts, axis=1)
+        rect[1] = pts[np.argmin(diff)] # top-right
+        rect[3] = pts[np.argmax(diff)] # bottom-left
+        return rect
+
+    def process_frame(self, frame):
+        fh, fw, _ = frame.shape
+        readings = [None, None]
+        
+        parsed_vals = {}
+        
+        for name, roi in self.rois.items():
+            angle = 0.0
+            if roi:
+                norm_x, norm_y, norm_w, norm_h = roi[:4]
+                if len(roi) > 4:
+                    angle = roi[4]
+                x1 = int(norm_x * fw)
+                y1 = int(norm_y * fh)
+                w1 = int(norm_w * fw)
+                h1 = int(norm_h * fh)
+            else:
+                # Fallbacks if they don't set them
+                if name == "m1_cond": x1, y1, w1, h1 = int(fw*0.1), int(fh*0.2), int(fw*0.35), int(fh*0.25)
+                elif name == "m1_temp": x1, y1, w1, h1 = int(fw*0.1), int(fh*0.45), int(fw*0.35), int(fh*0.25)
+                elif name == "m2_cond": x1, y1, w1, h1 = int(fw*0.55), int(fh*0.2), int(fw*0.35), int(fh*0.25)
+                elif name == "m2_temp": x1, y1, w1, h1 = int(fw*0.55), int(fh*0.45), int(fw*0.35), int(fh*0.25)
+            
+            color = (0, 0, 255) if "m1" in name else (255, 0, 0)
+            center = (x1 + w1 / 2.0, y1 + h1 / 2.0)
+            
+            if angle != 0.0:
+                rect = ((center[0], center[1]), (w1, h1), angle)
+                box = cv2.boxPoints(rect)
+                box = np.int32(box)
+                cv2.drawContours(frame, [box], 0, color, 4)
+                
+                bx, by, bw, bh = cv2.boundingRect(box)
+                bx_c, by_c = max(0, bx), max(0, by)
+                crop_region = frame[by_c:min(fh, by+bh), bx_c:min(fw, bx+bw)]
+                
+                if crop_region.size > 0:
+                    crop_center = (center[0] - bx_c, center[1] - by_c)
+                    M = cv2.getRotationMatrix2D(crop_center, angle, 1.0)
+                    rotated_crop = cv2.warpAffine(crop_region, M, (crop_region.shape[1], crop_region.shape[0]))
+                    
+                    rx1 = int(crop_center[0] - w1/2)
+                    ry1 = int(crop_center[1] - h1/2)
+                    roi_img = rotated_crop[max(0, ry1):min(rotated_crop.shape[0], ry1+h1), max(0, rx1):min(rotated_crop.shape[1], rx1+w1)]
+                else:
+                    roi_img = np.array([])
+                draw_x, draw_y = int(box[0][0]), int(box[0][1])
+            else:
+                cv2.rectangle(frame, (x1, y1), (x1+w1, y1+h1), color, 4)
+                roi_img = frame[max(0, y1):min(fh, y1+h1), max(0, x1):min(fw, x1+w1)]
+                draw_x, draw_y = x1, y1
+                
+            if roi_img.size == 0:
+                parsed_vals[name] = 0.0
+                continue
+                
+            if self.model and self.transform:
+                try:
+                    val = self.predict_cnn(roi_img)
+                except Exception as e:
+                    print(f"CNN Error: {e}")
+                    val = self.parse_7segment(roi_img)
+            else:
+                val = self.parse_7segment(roi_img)
+            parsed_vals[name] = val
+            
+            # Label it
+            cv2.putText(frame, f"{name}: {val}", (draw_x, max(30, draw_y-10)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+            
+        readings[0] = (parsed_vals.get("m1_cond", 0.0), parsed_vals.get("m1_temp", 0.0))
+        readings[1] = (parsed_vals.get("m2_cond", 0.0), parsed_vals.get("m2_temp", 0.0))
+        
+        # Emit to callbacks
+        for cb in self.callbacks:
+            try:
+                cb(readings)
+            except: pass
+
+    def predict_cnn(self, roi_img):
+        if not HAS_TORCH or self.model is None or self.transform is None:
+            return 0.0
+            
+        # Convert BGR OpenCV image to PIL RGB
+        rgb_img = cv2.cvtColor(roi_img, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb_img)
+        
+        # Transform to tensor
+        input_tensor = self.transform(pil_img).unsqueeze(0).to(self.device) # Add batch dim
+        
+        with torch.no_grad():
+            output = self.model(input_tensor) # [1, 7, 12]
+            
+        # Get argmax over classes (dim=2)
+        preds = torch.argmax(output, dim=2)[0] # [7]
+        
+        # Convert to string
+        pred_str = tensor_to_string(preds)
+        
+        # Try converting to float
+        try:
+            # Remove any trailing invalid chars or extra dots
+            pred_str = pred_str.strip()
+            if not pred_str:
+                return 0.0
+            return float(pred_str)
+        except ValueError:
+            return 0.0
+
+    def parse_7segment(self, roi):
+        # Crop the border
+        roi = roi[5:-5, 5:-5]
+        h, w = roi.shape[:2]
+        if h == 0 or w == 0:
+            return 0.0
+            
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        
+        # 1. CLAHE
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        gray = clahe.apply(gray)
+        
+        # 2. Blackhat for dark-on-light segments
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
+        blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
+        
+        # 3. Thresholding
+        _, thresh = cv2.threshold(blackhat, 30, 255, cv2.THRESH_BINARY)
+        
+        # 4. Deskew
+        shear_deg = 12
+        shear_rad = shear_deg * np.pi / 180.0
+        M = np.float32([
+            [1, np.tan(shear_rad), -np.tan(shear_rad) * h],
+            [0, 1, 0]
+        ])
+        deskewed = cv2.warpAffine(thresh, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        
+        # 5. Remove horizontal lines (deskew artifacts)
+        contours, _ = cv2.findContours(deskewed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        mask = np.zeros_like(deskewed)
+        for c in contours:
+            cx, cy, cw, ch = cv2.boundingRect(c)
+            if ch > cw * 0.8:
+                cv2.drawContours(mask, [c], -1, 255, -1)
+        
+        thresh = cv2.bitwise_and(deskewed, mask)
+        
+        # 6. Morphological closing to bridge gaps
+        kernel_close = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 5))
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_close)
+        
+        # X-projection to find digits
+        x_proj = np.sum(thresh, axis=0)
+        x_proj_smooth = np.convolve(x_proj, np.ones(5)/5, mode='same')
+        x_threshold = np.max(x_proj_smooth) * 0.1
+        digit_cols = np.where(x_proj_smooth > x_threshold)[0]
+        
+        from itertools import groupby
+        from operator import itemgetter
+        regions = []
+        for k, g in groupby(enumerate(digit_cols), lambda ix: ix[0] - ix[1]):
+            group = list(map(itemgetter(1), g))
+            if group[-1] - group[0] > 5: # minimum width of a digit (a '1' can be very thin)
+                regions.append((group[0], group[-1]))
+                
+        if not regions:
+            return 0.0
+            
+        # Global Y-projection to find top/bottom of text
+        y_proj = np.sum(thresh, axis=1)
+        y_proj_smooth = np.convolve(y_proj, np.ones(5)/5, mode='same')
+        y_threshold = np.max(y_proj_smooth) * 0.1
+        y_rows = np.where(y_proj_smooth > y_threshold)[0]
+        if len(y_rows) == 0:
+            return 0.0
+        global_y1, global_y2 = y_rows[0], y_rows[-1]
+        
+        # Find the decimal point by looking at the gaps between digits
+        max_gap_pixels = 0
+        decimal_idx = -1
+        for i, (x1, x2) in enumerate(regions):
+            if i > 0:
+                prev_x2 = regions[i-1][1]
+                gap_roi = thresh[max(0, global_y2 - 30):global_y2, prev_x2:x1]
+                if gap_roi.size > 0:
+                    gap_pixels = np.sum(gap_roi)
+                    if gap_pixels > max_gap_pixels and gap_pixels > 255 * 10:
+                        max_gap_pixels = gap_pixels
+                        decimal_idx = i
+        
+        result_str = ""
+        for i, (x1, x2) in enumerate(regions):
+            if i == decimal_idx:
+                result_str += "."
+                
+            digit_roi = thresh[global_y1:global_y2, x1:x2]
+            
+            # Density check to reject edge artifacts
+            density = np.sum(digit_roi) / (255.0 * digit_roi.shape[0] * digit_roi.shape[1])
+            if density > 0.6:
+                continue
+                
+            digit = self._identify_digit(digit_roi)
+            if digit is not None:
+                # If we parsed a 'C' or 'P', break (don't add to float)
+                if isinstance(digit, str) and not digit.isdigit():
+                    break
+                result_str += str(digit)
+                
+        try:
+            return float(result_str) if result_str else 0.0
+        except:
+            return 0.0
+
+    def _identify_digit(self, digit_mask):
+        """Identify digit using projection-based segment detection."""
+        h, w = digit_mask.shape
+        
+        # Horizontal bars (Top, Center, Bottom)
+        mid_col = digit_mask[:, int(w*0.3):int(w*0.7)]
+        y_proj = np.sum(mid_col, axis=1) # Shape: (h,)
+        h_thresh = 0.5 * mid_col.shape[1] * 255
+        
+        top = np.max(y_proj[:int(h*0.3)]) > h_thresh if len(y_proj[:int(h*0.3)]) > 0 else False
+        center = np.max(y_proj[int(h*0.3):int(h*0.7)]) > h_thresh if len(y_proj[int(h*0.3):int(h*0.7)]) > 0 else False
+        bottom = np.max(y_proj[int(h*0.7):]) > h_thresh if len(y_proj[int(h*0.7):]) > 0 else False
+        
+        # Vertical bars (Top-Left, Bottom-Left, Top-Right, Bottom-Right)
+        # Exclude the top/bottom 15% and center 20% to avoid overlap with horizontal bars
+        q_tl = digit_mask[int(h*0.15):int(h*0.4), :int(w*0.4)]
+        q_bl = digit_mask[int(h*0.6):int(h*0.85), :int(w*0.4)]
+        q_tr = digit_mask[int(h*0.15):int(h*0.4), int(w*0.6):]
+        q_br = digit_mask[int(h*0.6):int(h*0.85), int(w*0.6):]
+        
+        def has_vertical_bar(quad):
+            if quad.size == 0:
+                return False
+            coords = cv2.findNonZero(quad)
+            if coords is not None:
+                x, y, w_rect, h_rect = cv2.boundingRect(coords)
+                if h_rect > quad.shape[0] * 0.5 and h_rect >= w_rect:
+                    return True
+                if h_rect > quad.shape[0] * 0.7:
+                    return True
+            return False
+
+        top_left = has_vertical_bar(q_tl)
+        bottom_left = has_vertical_bar(q_bl)
+        top_right = has_vertical_bar(q_tr)
+        bottom_right = has_vertical_bar(q_br)
+        
+        on = (int(top), int(top_left), int(top_right), int(center), int(bottom_left), int(bottom_right), int(bottom))
+        
+        lookup = {
+            (1, 1, 1, 0, 1, 1, 1): '0',
+            (0, 0, 1, 0, 0, 1, 0): '1',
+            (1, 0, 1, 1, 1, 0, 1): '2',
+            (1, 0, 1, 1, 0, 1, 1): '3',
+            (0, 1, 1, 1, 0, 1, 0): '4',
+            (1, 1, 0, 1, 0, 1, 1): '5',
+            (1, 1, 0, 1, 1, 1, 1): '6',
+            (1, 0, 1, 0, 0, 1, 0): '7',
+            (1, 1, 1, 1, 1, 1, 1): '8',
+            (1, 1, 1, 1, 0, 1, 1): '9',
+            (1, 1, 0, 0, 1, 0, 1): 'C',
+            (1, 1, 1, 1, 1, 0, 0): 'P'
+        }
+        
+        return lookup.get(on, None)
+
+if __name__ == "__main__":
+    ocr = MeterOCR()
+    img = cv2.imread("camera_0.jpg")
+    
+    def my_cb(readings):
+        print("Readings:", readings)
+        
+    ocr.add_callback(my_cb)
+    ocr.process_frame(img)

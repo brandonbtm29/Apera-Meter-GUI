@@ -461,6 +461,7 @@ class MeterController(QWidget):
         self.config[f"autosave_mode_{self.meter_id}"] = self.combo_autosave.currentText()
         self.config[f"autosave_min_{self.meter_id}"] = self.ent_autosave_min.text()
         self.config[f"save_template_{self.meter_id}"] = self.ent_save_template.text()
+        self.config[f"save_on_pause_{self.meter_id}"] = getattr(self, 'chk_save_on_pause', QCheckBox()).isChecked()
         self.save_config()
 
     def toggle_autosave_interval(self):
@@ -703,6 +704,7 @@ class MeterController(QWidget):
 
     def clear_log(self, init_file=False):
         self.table.setRowCount(0)
+        self.last_auto_filepath = None
         self.received_timestamps.clear()
         self.plot_dates.clear()
         self.plot_conds.clear()
@@ -1022,6 +1024,7 @@ class MeterController(QWidget):
                 DP = w4_rem % 2048
                 
                 temp_c = NTC / 10.0
+                self.last_serial_temp = f"{temp_c:.1f}"
                 mode_str = "Cond" if mode == 2 else f"Mode({mode})"
                 
                 val_float = DP
@@ -1080,7 +1083,40 @@ class MeterController(QWidget):
                 row_data = (dt_str, mode_str, cond_us, cond_ms, f"{temp_c:.1f}", str(w4))
                 
                 if self.is_recording:
+                    if getattr(self, 'ocr_active', False):
+                        # Throttle OCR visual logging to 10s if we wanted to
+                        pass
                     self.signals.update_tree.emit(dt_obj, row_data)
+                    
+                    # --- SMART DATASET RECORDING LOGIC ---
+                    app = self.parent_app
+                    is_continuous = getattr(app, 'dataset_checkbox', None) and app.dataset_checkbox.isChecked()
+                    is_manual = getattr(app, 'manual_snap_requested', False)
+                    
+                    if (is_continuous or is_manual) and getattr(app, 'dataset_session_dir', None):
+                        # Grab the current frame
+                        frame = app.ocr_feed_tab.last_frame
+                        if frame is not None:
+                            import cv2
+                            import time
+                            import os
+                            ts = time.time()
+                            frame_path = os.path.join(app.dataset_session_dir, "frames", f"frame_{ts}.jpg")
+                            cv2.imwrite(frame_path, frame)
+                            
+                            with open(app.dataset_csv_path, "a", encoding="utf-8") as f:
+                                # Write true screen_val from Serial
+                                f.write(f"{ts},{self.meter_id},{cond_ms},mS,{raw_cond}\n")
+                                
+                        if is_manual:
+                            app.manual_snap_requested = False
+                            try:
+                                def reset_btn():
+                                    app.btn_manual_snap.setText("📷 Manual Snap (Wait for Sync)")
+                                    app.btn_manual_snap.setEnabled(True)
+                                from PyQt6.QtCore import QTimer
+                                QTimer.singleShot(0, reset_btn)
+                            except: pass
                     
             except Exception: pass
                 
@@ -1559,6 +1595,275 @@ class SettingsTab(QWidget):
         self.parent_app.meter2.save_config()
         
         QMessageBox.information(self, "Success", "All settings saved successfully.")
+
+from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtGui import QImage, QPixmap
+import cv2
+
+from PyQt6.QtWidgets import QRubberBand, QSlider, QPushButton, QHBoxLayout, QDoubleSpinBox
+from PyQt6.QtCore import QPoint, QRect, Qt, pyqtSignal
+from PyQt6.QtGui import QImage, QPixmap
+import cv2
+
+class InteractiveImageLabel(QLabel):
+    roi_selected = pyqtSignal(QRect)
+    
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.rubberBand = None
+        self.origin = QPoint()
+        self.current_rect = None
+        self.drawing_enabled = False
+        
+    def mousePressEvent(self, event):
+        if not self.drawing_enabled:
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.origin = event.pos()
+            if not self.rubberBand:
+                self.rubberBand = QRubberBand(QRubberBand.Shape.Rectangle, self)
+            self.rubberBand.setGeometry(QRect(self.origin, self.origin))
+            self.rubberBand.show()
+            
+    def mouseMoveEvent(self, event):
+        if not self.drawing_enabled:
+            return
+        if self.rubberBand:
+            self.rubberBand.setGeometry(QRect(self.origin, event.pos()).normalized())
+            
+    def mouseReleaseEvent(self, event):
+        if not self.drawing_enabled:
+            return
+        if event.button() == Qt.MouseButton.LeftButton and self.rubberBand:
+            self.current_rect = self.rubberBand.geometry()
+            self.roi_selected.emit(self.current_rect)
+
+class OCRFeedTab(QWidget):
+    image_ready = pyqtSignal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.app = parent
+        main_layout = QHBoxLayout()
+        self.setLayout(main_layout)
+        
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_layout.addWidget(splitter)
+        
+        # --- Left Panel ---
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setWidget(left_panel)
+        scroll_area.setFixedWidth(350)
+        splitter.addWidget(scroll_area)
+        
+        # Global OCR Controls (Migrated from Toolbar)
+        gb_global = QGroupBox("Global Controls")
+        l_global = QVBoxLayout(gb_global)
+        l_global.addWidget(self.app.ocr_checkbox)
+        l_global.addWidget(self.app.dataset_checkbox)
+        l_global.addWidget(self.app.btn_manual_snap)
+        l_global.addWidget(self.app.ocr_status_label)
+        
+        # Focus control
+        self.focus_slider = QSlider(Qt.Orientation.Horizontal)
+        self.focus_slider.setRange(-1, 255)
+        self.focus_slider.setValue(-1)
+        self.focus_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.focus_slider.setTickInterval(10)
+        self.focus_label = QLabel("Focus: Auto")
+        self.focus_slider.valueChanged.connect(self.on_focus_changed)
+        l_global.addWidget(QLabel("Camera Focus:"))
+        l_global.addWidget(self.focus_slider)
+        l_global.addWidget(self.focus_label)
+        left_layout.addWidget(gb_global)
+        
+        # Draw control
+        self.btn_draw = QPushButton("🖌️ Draw ROI")
+        self.btn_draw.setCheckable(True)
+        self.btn_draw.toggled.connect(self.toggle_drawing)
+        left_layout.addWidget(self.btn_draw)
+        
+        # Clear All
+        self.btn_clear_roi = QPushButton("🗑️ Clear All ROIs")
+        self.btn_clear_roi.clicked.connect(self.clear_roi)
+        left_layout.addWidget(self.btn_clear_roi)
+        
+        self.roi_spinboxes = {}
+        # ROI Groups
+        for name, title in [("m1_cond", "M1 Cond"), ("m2_cond", "M2 Cond")]:
+            gb = QGroupBox(title)
+            l = QVBoxLayout(gb)
+            
+            btn_set = QPushButton(f"✅ Assign {title} to Drawn Box")
+            btn_set.clicked.connect(lambda checked, n=name: self.set_specific_roi(n))
+            l.addWidget(btn_set)
+            
+            grid = QGridLayout()
+            spins = {}
+            for i, prop in enumerate(["X", "Y", "W", "H", "Angle"]):
+                grid.addWidget(QLabel(prop), i, 0)
+                spin = QDoubleSpinBox()
+                if prop == "Angle":
+                    spin.setRange(-180.0, 180.0)
+                else:
+                    spin.setRange(0.0, 100.0) # Percentage
+                spin.setDecimals(1)
+                spin.setSingleStep(0.1)
+                spin.valueChanged.connect(lambda val, n=name, p=prop: self.on_spinbox_changed(n, p, val))
+                grid.addWidget(spin, i, 1)
+                spins[prop] = spin
+            
+            self.roi_spinboxes[name] = spins
+            l.addLayout(grid)
+            
+            btn_clear_single = QPushButton("🗑️ Clear Single")
+            btn_clear_single.clicked.connect(lambda checked, n=name: self.clear_single_roi(n))
+            l.addWidget(btn_clear_single)
+            
+            left_layout.addWidget(gb)
+        
+        left_layout.addStretch()
+        
+        # --- Image Label ---
+        self.image_label = InteractiveImageLabel("Waiting for OCR Camera Feed...")
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setStyleSheet("background-color: black; color: white; font-size: 18px;")
+        self.image_label.roi_selected.connect(self.on_roi_selected)
+        splitter.addWidget(self.image_label)
+        
+        # Set splitter sizes so the left panel takes up its minimum width and the image label takes the rest
+        splitter.setSizes([350, 1000])
+        
+        self.image_ready.connect(self.set_image)
+        self.last_frame = None
+        self.current_drawn_rect = None
+
+    def toggle_drawing(self, checked):
+        self.image_label.drawing_enabled = checked
+        if not checked and self.image_label.rubberBand:
+            self.image_label.rubberBand.hide()
+
+    def on_focus_changed(self, val):
+        if val == -1:
+            self.focus_label.setText("Focus: Auto")
+        else:
+            self.focus_label.setText(f"Focus: {val}")
+        if hasattr(self.app, 'ocr_pipeline') and self.app.ocr_pipeline:
+            self.app.ocr_pipeline.set_focus(val)
+
+    def on_roi_selected(self, rect):
+        self.current_drawn_rect = rect
+
+    def set_specific_roi(self, name):
+        if not self.current_drawn_rect or not self.last_frame is not None: return
+        
+        # Calculate normalized coordinates
+        # We need the displayed pixmap size vs the original image size
+        if not self.image_label.pixmap(): return
+        
+        pm_w = self.image_label.pixmap().width()
+        pm_h = self.image_label.pixmap().height()
+        
+        lbl_w = self.image_label.width()
+        lbl_h = self.image_label.height()
+        
+        # Offset for centered image
+        x_off = (lbl_w - pm_w) / 2
+        y_off = (lbl_h - pm_h) / 2
+        
+        rect = self.current_drawn_rect
+        
+        # Adjust rect to pixmap coordinates
+        rx = max(0, rect.x() - x_off)
+        ry = max(0, rect.y() - y_off)
+        rw = min(rect.width(), pm_w - rx)
+        rh = min(rect.height(), pm_h - ry)
+        
+        # Normalize
+        norm_x = rx / pm_w
+        norm_y = ry / pm_h
+        norm_w = rw / pm_w
+        norm_h = rh / pm_h
+        
+        self.app.ocr_pipeline.rois[name] = [norm_x, norm_y, norm_w, norm_h, 0.0]
+        self.app.ocr_pipeline.save_rois()
+        self.refresh_spinboxes()
+        
+        # Hide rubberband
+        if self.image_label.rubberBand:
+            self.image_label.rubberBand.hide()
+        self.current_drawn_rect = None
+        
+        import QMessageBox
+        QMessageBox.information(self, "ROI Set", f"Successfully set ROI for {name}.")
+
+    def clear_roi(self):
+        self.app.ocr_pipeline.rois = {"m1_cond": None, "m2_cond": None}
+        self.app.ocr_pipeline.save_rois()
+        self.refresh_spinboxes()
+        if self.image_label.rubberBand:
+            self.image_label.rubberBand.hide()
+        import QMessageBox
+        QMessageBox.information(self, "ROI Cleared", "All ROIs have been reset to defaults.")
+
+    def on_spinbox_changed(self, name, prop, val):
+        if not hasattr(self.app, 'ocr_pipeline') or not self.app.ocr_pipeline: return
+        roi = self.app.ocr_pipeline.rois.get(name)
+        if not roi or len(roi) < 5:
+            roi = [0.0, 0.0, 0.0, 0.0, 0.0]
+        else:
+            roi = list(roi)
+            
+        if prop == "X": roi[0] = val / 100.0
+        elif prop == "Y": roi[1] = val / 100.0
+        elif prop == "W": roi[2] = val / 100.0
+        elif prop == "H": roi[3] = val / 100.0
+        elif prop == "Angle": roi[4] = val
+        
+        self.app.ocr_pipeline.rois[name] = roi
+        self.app.ocr_pipeline.save_rois()
+
+    def clear_single_roi(self, name):
+        self.app.ocr_pipeline.rois[name] = None
+        self.app.ocr_pipeline.save_rois()
+        self.refresh_spinboxes()
+        import QMessageBox
+        QMessageBox.information(self, "ROI Cleared", f"{name} ROI cleared.")
+
+    def refresh_spinboxes(self):
+        if not hasattr(self.app, 'ocr_pipeline') or not self.app.ocr_pipeline: return
+        for name, spins in self.roi_spinboxes.items():
+            roi = self.app.ocr_pipeline.rois.get(name)
+            for spin in spins.values(): spin.blockSignals(True)
+            if roi and len(roi) >= 4:
+                spins["X"].setValue(roi[0]*100.0)
+                spins["Y"].setValue(roi[1]*100.0)
+                spins["W"].setValue(roi[2]*100.0)
+                spins["H"].setValue(roi[3]*100.0)
+                spins["Angle"].setValue(roi[4] if len(roi)>4 else 0.0)
+            else:
+                for spin in spins.values(): spin.setValue(0.0)
+            for spin in spins.values(): spin.blockSignals(False)
+
+    def receive_frame_threadsafe(self, frame):
+        self.last_frame = frame.copy()
+        self.image_ready.emit(frame)
+
+    def set_image(self, frame):
+        rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb_image.shape
+        bytes_per_line = ch * w
+        q_img = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        
+        pixmap = QPixmap.fromImage(q_img)
+        scaled_pixmap = pixmap.scaled(self.image_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        self.image_label.setPixmap(scaled_pixmap)
+
 class MeterApp(QMainWindow):
 
 
@@ -1570,6 +1875,37 @@ class MeterApp(QMainWindow):
 
         
         self.tabs = QTabWidget()
+
+        # Instantiate buttons without placing them in the global toolbar
+        self.ocr_checkbox = QPushButton("🎥 Turn Camera On")
+        self.ocr_checkbox.setCheckable(True)
+        self.ocr_checkbox.setStyleSheet("font-weight: bold; font-size: 14px; padding: 5px;")
+        self.ocr_checkbox.toggled.connect(self.toggle_ocr_mode)
+        
+        self.dataset_checkbox = QCheckBox("Record Smart Dataset (Save 1 frame per Serial Reading)")
+        self.dataset_checkbox.setStyleSheet("font-weight: bold; margin-left: 10px; margin-right: 10px; color: #2980b9;")
+        self.dataset_checkbox.stateChanged.connect(self.toggle_dataset_mode)
+        
+        self.manual_snap_requested = False
+        self.btn_manual_snap = QPushButton("📷 Manual Snap (Wait for Sync)")
+        self.btn_manual_snap.clicked.connect(self.request_manual_snap)
+        
+        self.ocr_status_label = QLabel("OCR: Off")
+        self.ocr_status_label.setStyleSheet("color: gray;")
+        
+        from ocr_pipeline import MeterOCR
+        self.ocr_pipeline = MeterOCR()
+        self.ocr_pipeline.add_callback(self.on_ocr_readings)
+
+        self.ocr_feed_tab = OCRFeedTab(self)
+        self.ocr_pipeline.add_frame_callback(self.ocr_feed_tab.receive_frame_threadsafe)
+        
+        # Populate initial values
+        self.ocr_feed_tab.refresh_spinboxes()
+        
+        self.dataset_session_dir = None
+        self.dataset_csv_path = None
+
         self.setCentralWidget(self.tabs)
         
         self.meter1 = MeterController(meter_id=1, parent_app=self)
@@ -1580,6 +1916,7 @@ class MeterApp(QMainWindow):
         
         self.tabs.addTab(self.meter1, "Meter 1")
         self.tabs.addTab(self.meter2, "Meter 2")
+        self.tabs.addTab(self.ocr_feed_tab, "Live OCR Feed")
         
         try:
             if "app_geometry" in self.meter1.config:
@@ -1624,6 +1961,97 @@ class MeterApp(QMainWindow):
             
         subprocess.Popen(args)
         QApplication.quit()
+
+
+    def set_ocr_status(self, text, color):
+        self.ocr_status_label.setText(text)
+        self.ocr_status_label.setStyleSheet(f"color: {color};")
+
+    def toggle_ocr_mode(self, state):
+        import time
+        if state:
+            self.ocr_checkbox.setText("🎥 Turn Camera Off")
+            self.set_ocr_status("OCR: Starting Camera...", "#f39c12")
+            self.meter1.ocr_active = True
+            self.meter2.ocr_active = True
+            self.ocr_pipeline.start()
+            self.ocr_start_time = time.time()
+            self.set_ocr_status("OCR: Warming up (10s delay)...", "#f39c12")
+        else:
+            self.ocr_checkbox.setText("🎥 Turn Camera On")
+            self.ocr_pipeline.stop()
+            self.set_ocr_status("OCR: Off", "gray")
+            self.meter1.ocr_active = False
+            self.meter2.ocr_active = False
+
+    def toggle_dataset_mode(self, state):
+        import os
+        import time
+        if state:
+            # Create session folder
+            timestamp = int(time.time())
+            self.dataset_session_dir = os.path.join(os.getcwd(), f"dataset_session_{timestamp}")
+            frames_dir = os.path.join(self.dataset_session_dir, "frames")
+            os.makedirs(frames_dir, exist_ok=True)
+            self.dataset_csv_path = os.path.join(self.dataset_session_dir, "readings.csv")
+            with open(self.dataset_csv_path, "w", encoding="utf-8") as f:
+                f.write("timestamp,meter_id,screen_val,unit,raw_cond\n")
+            
+            # Save ROIs immediately
+            import json
+            rois_path = os.path.join(self.dataset_session_dir, "rois.json")
+            with open(rois_path, "w") as f:
+                json.dump(self.ocr_pipeline.rois, f)
+        else:
+            self.dataset_session_dir = None
+            self.dataset_csv_path = None
+
+    def request_manual_snap(self):
+        import os
+        import time
+        import json
+        if not getattr(self, 'dataset_session_dir', None):
+            # Create session folder if it doesn't exist
+            timestamp = int(time.time())
+            self.dataset_session_dir = os.path.join(os.getcwd(), f"dataset_session_{timestamp}")
+            frames_dir = os.path.join(self.dataset_session_dir, "frames")
+            os.makedirs(frames_dir, exist_ok=True)
+            self.dataset_csv_path = os.path.join(self.dataset_session_dir, "readings.csv")
+            with open(self.dataset_csv_path, "w", encoding="utf-8") as f:
+                f.write("timestamp,meter_id,screen_val,unit,raw_cond\n")
+            rois_path = os.path.join(self.dataset_session_dir, "rois.json")
+            with open(rois_path, "w") as f:
+                json.dump(self.ocr_pipeline.rois, f)
+                
+        self.manual_snap_requested = True
+        self.btn_manual_snap.setText("⏳ Waiting for Serial...")
+        self.btn_manual_snap.setEnabled(False)
+
+    def on_ocr_readings(self, readings):
+        import time
+        import datetime
+        if time.time() - getattr(self, 'ocr_start_time', 0) < 10:
+            return
+            
+        if self.ocr_status_label.text() != "OCR: Running (1 Hz)":
+            self.set_ocr_status("OCR: Running (1 Hz)", "#27ae60")
+            
+        now = datetime.datetime.now()
+        dt_str = now.strftime("%Y-%m-%d %H:%M:%S")
+        
+        if len(readings) > 0 and readings[0] is not None:
+            c1, _ = readings[0]
+            t1_display = getattr(self.meter1, 'last_serial_temp', "0.0")
+            row_data1 = (dt_str, "OCR", str(c1*1000), str(c1), t1_display, "0")
+            if self.meter1.is_recording:
+                self.meter1.signals.update_tree.emit(now, row_data1)
+                
+        if len(readings) > 1 and readings[1] is not None:
+            c2, _ = readings[1]
+            t2_display = getattr(self.meter2, 'last_serial_temp', "0.0")
+            row_data2 = (dt_str, "OCR", str(c2*1000), str(c2), t2_display, "0")
+            if self.meter2.is_recording:
+                self.meter2.signals.update_tree.emit(now, row_data2)
 
     def get_used_ports(self):
         used = []
