@@ -289,18 +289,20 @@ class DatasetCurationTab(QWidget):
                 
                 reply = QMessageBox.question(
                     self, "Confirm Lag Calibration", 
-                    f"Set hardware lag to {lag_ms:.1f} ms?\n\n"
-                    f"This tells the software that the camera feed is {lag_ms:.1f} ms behind the serial measurement.",
+                    f"Set hardware lag to {lag_ms:.1f} ms for Meter {meter_id}?\n\n"
+                    f"This tells the software that the camera feed is {lag_ms:.1f} ms behind the serial measurement for M{meter_id}.",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                 )
                 
                 if reply == QMessageBox.StandardButton.Yes:
                     if self.app:
-                        self.app.meter1.config["hardware_lag_ms"] = lag_ms
-                        self.app.meter1.save_config()
-                        self.app.meter2.config["hardware_lag_ms"] = lag_ms
-                        self.app.meter2.save_config()
-                        QMessageBox.information(self, "Success", f"Hardware lag saved: {lag_ms:.1f} ms")
+                        if str(meter_id) == "1":
+                            self.app.meter1.config["hardware_lag_ms"] = lag_ms
+                            self.app.meter1.save_config()
+                        elif str(meter_id) == "2":
+                            self.app.meter2.config["hardware_lag_ms"] = lag_ms
+                            self.app.meter2.save_config()
+                        QMessageBox.information(self, "Success", f"Hardware lag saved to Meter {meter_id}: {lag_ms:.1f} ms")
             except ValueError:
                 QMessageBox.warning(self, "Error", "Filename timestamp format invalid.")
         else:
