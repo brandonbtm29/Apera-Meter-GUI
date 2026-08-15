@@ -1149,11 +1149,10 @@ class MeterController(QWidget):
                     app.calibration_burst_serial_ts = time.time()
                     app.calibration_burst_screen_val = cond_ms
                     app.calibration_burst_count = 15 # 15 frames @ 30 FPS = ~500ms burst
-                        
-                        try:
-                            app.btn_calibration_burst.setText("Recording Burst...")
-                            app.btn_calibration_burst.setEnabled(False)
-                        except: pass
+                    try:
+                        app.btn_calibration_burst.setText("Recording Burst...")
+                        app.btn_calibration_burst.setEnabled(False)
+                    except: pass
                     
             except Exception: pass
                 
