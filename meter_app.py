@@ -973,9 +973,13 @@ class MeterController(QWidget):
                         idx = buffer.find(b'>')
                         packet = buffer[:idx+1]
                         buffer = buffer[idx+1:]
-                        self.process_packet(packet)
-            except Exception:
-                self.set_status("Disconnected (Error)", "red")
+                        try:
+                            self.process_packet(packet)
+                        except Exception as e:
+                            print(f"Meter {self.meter_id} Packet Parse Error: {e}")
+            except Exception as e:
+                print(f"Meter {self.meter_id} Serial Error: {e}")
+                self.set_status(f"Disconnected ({type(e).__name__})", "red")
                 self.is_connected = False
                 break
             time.sleep(0.05)
