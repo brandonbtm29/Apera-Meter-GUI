@@ -1114,7 +1114,6 @@ class MeterController(QWidget):
                     
                 # --- SMART DATASET RECORDING LOGIC ---
                 if is_manual and not getattr(app, 'dataset_session_dir', None):
-                    import os, time, json
                     timestamp = int(time.time())
                     app.dataset_session_dir = os.path.join(os.getcwd(), f"dataset_session_{timestamp}")
                     frames_dir = os.path.join(app.dataset_session_dir, "frames")
