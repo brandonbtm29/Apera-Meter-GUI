@@ -17,6 +17,7 @@ except ImportError:
 class MeterOCR:
     def __init__(self, camera_index=0):
         self.camera_index = camera_index
+        self.ocr_interval = 1.0
         self.cap = None
         self.is_running = False
         self.callbacks = []
@@ -24,9 +25,7 @@ class MeterOCR:
         self.last_warp_matrices = [None, None]
         self.rois = {
             "m1_cond": None,
-            "m1_temp": None,
-            "m2_cond": None,
-            "m2_temp": None
+            "m2_cond": None
         }
         self.load_rois()
         
@@ -34,6 +33,7 @@ class MeterOCR:
         self.device = None
         self.transform = None
         if HAS_TORCH:
+            torch.set_num_threads(1)  # Prevent PyTorch from using all CPU cores and starving the serial thread
             try:
                 self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
                 self.model = MeterCNN().to(self.device)
@@ -105,8 +105,12 @@ class MeterOCR:
         import os
         if os.name == 'nt':
             self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+            if not self.cap.isOpened():
+                self.cap = cv2.VideoCapture(self.camera_index)
         else:
             self.cap = cv2.VideoCapture(self.camera_index)
+        # Set MJPG codec to allow USB bandwidth for 4K
+        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         # Try to set 4K resolution
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 3840)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)
@@ -129,9 +133,32 @@ class MeterOCR:
                 
             display_frame = frame.copy()
             now = time.time()
-            if now - last_process >= 1.0:
-                self.process_frame(display_frame)
+            
+            # Always draw ROIs so they stay on screen
+            roi_imgs, roi_metadata = self.extract_crops(display_frame)
+            if not hasattr(self, "last_parsed_vals"):
+                self.last_parsed_vals = {}
+                
+            for name, meta in roi_metadata.items():
+                color = (0, 0, 255) if "m1" in name else (255, 0, 0)
+                if meta['box'] is not None:
+                    cv2.drawContours(display_frame, [meta['box']], 0, color, 4)
+                else:
+                    cv2.rectangle(display_frame, (meta['x1'], meta['y1']), (meta['x1']+meta['w1'], meta['y1']+meta['h1']), color, 4)
+                
+                val = self.last_parsed_vals.get(name, 0.0)
+                cv2.putText(display_frame, f"{name}: {val}", (meta['draw_x'], max(30, meta['draw_y']-10)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                
+                # Draw measurement indicator
+                last_inf = getattr(self, "last_inference_time", 0)
+                if now - last_inf < 0.3: # Flash for 300ms
+                    cv2.circle(display_frame, (max(10, meta['draw_x'] - 20), max(20, meta['draw_y'] - 15)), 10, (0, 255, 0), -1)
+                
+            if now - last_process >= self.ocr_interval:
+                # Do inference on the un-drawn frame
+                self.process_frame(frame)
                 last_process = now
+                self.last_inference_time = now
                 
             for cb in self.frame_callbacks:
                 try:
@@ -151,38 +178,28 @@ class MeterOCR:
         rect[3] = pts[np.argmax(diff)] # bottom-left
         return rect
 
-    def process_frame(self, frame):
+    def extract_crops(self, frame):
         fh, fw, _ = frame.shape
-        readings = [None, None]
-        
-        parsed_vals = {}
+        roi_imgs = {}
+        roi_metadata = {}
         
         for name, roi in self.rois.items():
             angle = 0.0
             if roi:
                 norm_x, norm_y, norm_w, norm_h = roi[:4]
-                if len(roi) > 4:
-                    angle = roi[4]
-                x1 = int(norm_x * fw)
-                y1 = int(norm_y * fh)
-                w1 = int(norm_w * fw)
-                h1 = int(norm_h * fh)
+                if len(roi) > 4: angle = roi[4]
+                x1, y1 = int(norm_x * fw), int(norm_y * fh)
+                w1, h1 = int(norm_w * fw), int(norm_h * fh)
             else:
-                # Fallbacks if they don't set them
-                if name == "m1_cond": x1, y1, w1, h1 = int(fw*0.1), int(fh*0.2), int(fw*0.35), int(fh*0.25)
-                elif name == "m1_temp": x1, y1, w1, h1 = int(fw*0.1), int(fh*0.45), int(fw*0.35), int(fh*0.25)
-                elif name == "m2_cond": x1, y1, w1, h1 = int(fw*0.55), int(fh*0.2), int(fw*0.35), int(fh*0.25)
-                elif name == "m2_temp": x1, y1, w1, h1 = int(fw*0.55), int(fh*0.45), int(fw*0.35), int(fh*0.25)
-            
-            color = (0, 0, 255) if "m1" in name else (255, 0, 0)
+                if name == "m1_cond": x1, y1, w1, h1 = int(fw*0.1), int(fh*0.2), int(fw*0.35), int(fh*0.4)
+                elif name == "m2_cond": x1, y1, w1, h1 = int(fw*0.55), int(fh*0.2), int(fw*0.35), int(fh*0.4)
+
             center = (x1 + w1 / 2.0, y1 + h1 / 2.0)
             
             if angle != 0.0:
                 rect = ((center[0], center[1]), (w1, h1), angle)
                 box = cv2.boxPoints(rect)
                 box = np.int32(box)
-                cv2.drawContours(frame, [box], 0, color, 4)
-                
                 bx, by, bw, bh = cv2.boundingRect(box)
                 bx_c, by_c = max(0, bx), max(0, by)
                 crop_region = frame[by_c:min(fh, by+bh), bx_c:min(fw, bx+bw)]
@@ -191,7 +208,6 @@ class MeterOCR:
                     crop_center = (center[0] - bx_c, center[1] - by_c)
                     M = cv2.getRotationMatrix2D(crop_center, angle, 1.0)
                     rotated_crop = cv2.warpAffine(crop_region, M, (crop_region.shape[1], crop_region.shape[0]))
-                    
                     rx1 = int(crop_center[0] - w1/2)
                     ry1 = int(crop_center[1] - h1/2)
                     roi_img = rotated_crop[max(0, ry1):min(rotated_crop.shape[0], ry1+h1), max(0, rx1):min(rotated_crop.shape[1], rx1+w1)]
@@ -199,10 +215,23 @@ class MeterOCR:
                     roi_img = np.array([])
                 draw_x, draw_y = int(box[0][0]), int(box[0][1])
             else:
-                cv2.rectangle(frame, (x1, y1), (x1+w1, y1+h1), color, 4)
                 roi_img = frame[max(0, y1):min(fh, y1+h1), max(0, x1):min(fw, x1+w1)]
                 draw_x, draw_y = x1, y1
+                box = None
                 
+            roi_imgs[name] = roi_img
+            roi_metadata[name] = {'draw_x': draw_x, 'draw_y': draw_y, 'box': box, 'x1': x1, 'y1': y1, 'w1': w1, 'h1': h1}
+            
+        return roi_imgs, roi_metadata
+
+    def process_frame(self, frame):
+        fh, fw, _ = frame.shape
+        readings = [None, None]
+        parsed_vals = {}
+        
+        roi_imgs, roi_metadata = self.extract_crops(frame)
+        
+        for name, roi_img in roi_imgs.items():
             if roi_img.size == 0:
                 parsed_vals[name] = 0.0
                 continue
@@ -217,8 +246,9 @@ class MeterOCR:
                 val = self.parse_7segment(roi_img)
             parsed_vals[name] = val
             
-            # Label it
-            cv2.putText(frame, f"{name}: {val}", (draw_x, max(30, draw_y-10)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        if not hasattr(self, "last_parsed_vals"):
+            self.last_parsed_vals = {}
+        self.last_parsed_vals.update(parsed_vals)
             
         readings[0] = (parsed_vals.get("m1_cond", 0.0), parsed_vals.get("m1_temp", 0.0))
         readings[1] = (parsed_vals.get("m2_cond", 0.0), parsed_vals.get("m2_temp", 0.0))
@@ -226,7 +256,13 @@ class MeterOCR:
         # Emit to callbacks
         for cb in self.callbacks:
             try:
-                cb(readings)
+                # We can use introspection or just pass it since we control meter_app
+                import inspect
+                sig = inspect.signature(cb)
+                if len(sig.parameters) == 2:
+                    cb(readings, roi_imgs)
+                else:
+                    cb(readings)
             except: pass
 
     def predict_cnn(self, roi_img):

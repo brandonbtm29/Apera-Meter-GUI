@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QLineEdit, QComboBox, QTextEdit, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QFileDialog, QInputDialog,
     QFormLayout, QFrame, QDialog, QGroupBox, QGridLayout, QListWidget, QStackedWidget,
-    QButtonGroup, QRadioButton
+    QButtonGroup, QRadioButton, QSpinBox
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QColor, QAction
@@ -91,6 +91,7 @@ class MeterController(QWidget):
     def __init__(self, meter_id=1, parent_app=None):
         super().__init__()
         self.meter_id = meter_id
+        self.parent_app = parent_app
         self.app_controller = parent_app
 
         self.ser = None
@@ -151,12 +152,7 @@ class MeterController(QWidget):
         if idx >= 0:
             self.port_combo.setCurrentIndex(idx)
         
-        # Connect on startup if matching
-        QTimer.singleShot(500, self._auto_connect_check)
-
-    def _auto_connect_check(self):
-        if self.port_combo.currentText() == self.config.get(f"default_com_port_{self.meter_id}"):
-            self.connect_meter()
+        # Auto-connect removed by user request
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
@@ -194,7 +190,15 @@ class MeterController(QWidget):
         self.top_btn_layout.addWidget(self.btn_clear)
         
         self.top_btn_layout.addStretch()
-
+        self.btn_manual_snap = QPushButton("📷 Manual Snap")
+        self.btn_calibration_burst = QPushButton("🎯 Capture Calibration Burst")
+        self.mode_combo = QComboBox()
+        
+        # We don't add the global app buttons here anymore to avoid the widget-parenting bug.
+        btn_layout = QHBoxLayout()
+        # You can add meter-specific buttons here if needed in the future
+        btn_layout.addStretch()
+        main_layout.addLayout(btn_layout)
         
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         main_layout.addWidget(self.main_splitter)
@@ -208,47 +212,46 @@ class MeterController(QWidget):
         lbl_title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
         left_layout.addWidget(lbl_title)
         
-        lbl_rec = QLabel("Recording Settings")
-        lbl_rec.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        left_layout.addWidget(lbl_rec)
+        self.gb_rec = CollapsibleBox("Recording Settings")
+        l_rec = QVBoxLayout()
         
         self.btn_record = QPushButton("▶️ Start Recording")
         self.btn_record.setStyleSheet("background-color: #2ecc71; color: white;")
         self.btn_record.clicked.connect(self.toggle_record)
-        left_layout.addWidget(self.btn_record)
+        l_rec.addWidget(self.btn_record)
         
         self.auto_dump_chk = QCheckBox("Auto-Dump Memory (hrs):")
         self.auto_dump_chk.setChecked(self.config.get(f"auto_dump_enabled_{self.meter_id}", False))
         self.auto_dump_chk.stateChanged.connect(self._save_auto_dump_config)
-        left_layout.addWidget(self.auto_dump_chk)
+        l_rec.addWidget(self.auto_dump_chk)
         self.auto_dump_entry = QLineEdit(str(self.config.get(f"default_auto_dump_hrs_{self.meter_id}", 2.0)))
         self.auto_dump_entry.textChanged.connect(self._save_auto_dump_config)
-        left_layout.addWidget(self.auto_dump_entry)
+        l_rec.addWidget(self.auto_dump_entry)
         
-
+        self.gb_rec.setLayout(l_rec)
+        left_layout.addWidget(self.gb_rec)
         
         line1 = QFrame()
         line1.setFrameShape(QFrame.Shape.HLine)
         left_layout.addWidget(line1)
         
-        lbl_axis = QLabel("Axis Limits")
-        lbl_axis.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        left_layout.addWidget(lbl_axis)
+        self.gb_axis = CollapsibleBox("Axis Limits")
+        l_axis = QVBoxLayout()
         
         self.auto_time_chk = QCheckBox("Auto Time")
         self.auto_time_chk.setChecked(self.config.get(f"auto_time_{self.meter_id}", True))
         self.auto_time_chk.stateChanged.connect(self._auto_chk_changed)
-        left_layout.addWidget(self.auto_time_chk)
+        l_axis.addWidget(self.auto_time_chk)
         
         self.auto_cond_chk = QCheckBox("Auto Cond")
         self.auto_cond_chk.setChecked(self.config.get(f"auto_cond_{self.meter_id}", True))
         self.auto_cond_chk.stateChanged.connect(self._auto_chk_changed)
-        left_layout.addWidget(self.auto_cond_chk)
+        l_axis.addWidget(self.auto_cond_chk)
         
         self.auto_temp_chk = QCheckBox("Auto Temp")
         self.auto_temp_chk.setChecked(self.config.get(f"auto_temp_{self.meter_id}", True))
         self.auto_temp_chk.stateChanged.connect(self._auto_chk_changed)
-        left_layout.addWidget(self.auto_temp_chk)
+        l_axis.addWidget(self.auto_temp_chk)
         
         form_layout = QFormLayout()
         self.ent_time_win = QLineEdit(str(self.config.get(f"time_win_{self.meter_id}", "10.0")))
@@ -267,11 +270,14 @@ class MeterController(QWidget):
         self.xaxis_combo.setCurrentText(self.config.get(f"xaxis_{self.meter_id}", "X-Axis: DateTime"))
         form_layout.addRow("Plot Mode:", self.xaxis_combo)
         
-        left_layout.addLayout(form_layout)
+        l_axis.addLayout(form_layout)
         
         self.btn_apply_lims = QPushButton("📊 Apply Limits")
         self.btn_apply_lims.clicked.connect(self.apply_limits)
-        left_layout.addWidget(self.btn_apply_lims)
+        l_axis.addWidget(self.btn_apply_lims)
+        
+        self.gb_axis.setLayout(l_axis)
+        left_layout.addWidget(self.gb_axis)
         
 
         left_layout.addStretch()
@@ -331,7 +337,7 @@ class MeterController(QWidget):
 
         # Metadata Tokens
         self.gb_tokens = CollapsibleBox("Metadata Tokens")
-        self.tokens_outer_layout = QVBoxLayout(self.gb_tokens)
+        self.tokens_outer_layout = QVBoxLayout()
         self.l_tokens = QFormLayout()
         self.tokens_outer_layout.addLayout(self.l_tokens)
         
@@ -339,11 +345,12 @@ class MeterController(QWidget):
         self.btn_add_tab_token.clicked.connect(self.request_add_custom_token)
         self.tokens_outer_layout.addWidget(self.btn_add_tab_token)
         self.token_inputs = {}
+        self.gb_tokens.setLayout(self.tokens_outer_layout)
         right_layout.addWidget(self.gb_tokens)
 
         # --- Data Recording & Export ---
         gb_save = CollapsibleBox("Data Recording & Export")
-        l_save = QFormLayout(gb_save)
+        l_save = QFormLayout()
         
         self.chk_use_global_template = QCheckBox("Use Global Save Settings")
         self.chk_use_global_template.setChecked(self.config.get(f"use_global_{self.meter_id}", True))
@@ -384,14 +391,13 @@ class MeterController(QWidget):
         self.ent_save_template.textChanged.connect(self._save_autosave_config)
         self.toggle_autosave_interval()
         
+        gb_save.setLayout(l_save)
         right_layout.addWidget(gb_save)
         
         self.refresh_tokens()
         self.toggle_global_template()
         
-        self.lbl_status = QLabel("Status: Disconnected")
-        self.lbl_status.setStyleSheet("color: gray;")
-        right_layout.addWidget(self.lbl_status)
+        # Status label removed, using global status bar
         
         line3 = QFrame()
         line3.setFrameShape(QFrame.Shape.HLine)
@@ -638,13 +644,13 @@ class MeterController(QWidget):
             self.last_autosave_min = 0.0
             self.btn_record.setText("⏸ Pause Recording")
             self.btn_record.setStyleSheet("background-color: #e74c3c; color: white;")
-            self.lbl_status.setText("Status: Recording...")
+            self.set_status("Recording...", "gray")
             self.unsaved_changes = True
         else:
             self.is_recording = False
             self.btn_record.setText("⏺ Start Recording")
             self.btn_record.setStyleSheet("background-color: #2ecc71; color: white;")
-            self.lbl_status.setText("Status: Paused")
+            self.set_status("Paused", "gray")
             
             if self.combo_autosave.currentText() in ["On Auto-Stop", "Every X Minutes"]:
                 self.save_excel(auto=True)
@@ -828,7 +834,9 @@ class MeterController(QWidget):
                     self.table.setSortingEnabled(True)
                     self.plot_data()
                     QMessageBox.information(self, "Recover", f"Recovered {s['points']} points.")
-                except Exception as e:
+                except serial.SerialException as e:
+                    self.parent_app.update_meter_status(self.meter_id, False)
+                    self.is_connected = False
                     QMessageBox.critical(self, "Error", f"Recovery failed: {e}")
             dialog.accept()
             
@@ -865,18 +873,22 @@ class MeterController(QWidget):
     def connect_meter(self):
         port = self.port_combo.currentText()
         if port == "Auto-Detect Apera Meter":
-            self.lbl_status.setText("Status: Scanning COM ports...")
-            self.btn_connect.setEnabled(False)
-            
-            self.scan_id = getattr(self, 'scan_id', 0) + 1
+            if not getattr(self, "is_scanning", False):
+                self.set_status("Scanning COM ports...", "gray")
+                self.btn_connect.setEnabled(False)
+                self.is_scanning = True
+                
+                self.scan_id = getattr(self, 'scan_id', 0) + 1
             current_id = self.scan_id
             
             def timeout_scan():
                 if getattr(self, 'scan_id', None) == current_id:
-                    self.scan_id = None
+                    self.ser = None
+                    self.parent_app.update_meter_status(self.meter_id, False)
+                    self.btn_connect.setText("Connect")
                     self.btn_connect.setEnabled(True)
-                    self.lbl_status.setText("Status: Auto-Detect Timeout")
-                    self.lbl_status.setStyleSheet("color: #E74C3C;")
+                    self.set_status("Auto-Detect Timeout", "gray")
+                    self.is_scanning = False
                     
             QTimer.singleShot(7000, timeout_scan)
             
@@ -893,11 +905,11 @@ class MeterController(QWidget):
     def _finish_connect(self, port, scan_id=None):
         if scan_id is not None and getattr(self, 'scan_id', None) != scan_id:
             return
-        self.scan_id = None
+        self.is_scanning = False
         self.btn_connect.setEnabled(True)
-        if not port or port == "No Ports Found":
-            self.lbl_status.setText("Status: Auto-Detect Failed")
-            self.lbl_status.setStyleSheet("color: #E74C3C;")
+        if not port:
+            self.set_status("Auto-Detect Failed", "red")
+            QMessageBox.critical(self, "Connection Error", f"Could not auto-detect Apera Meter {self.meter_id} on any COM port.")
             return
             
         try:
@@ -908,12 +920,11 @@ class MeterController(QWidget):
             self.ser.setDTR(False)
             self.ser.setRTS(False)
             self.is_connected = True
-            
-            self.btn_connect.setText("❌ Disconnect")
+            self.parent_app.update_meter_status(self.meter_id, True, self.ser.port)
+            self.btn_connect.setText("🔌 Disconnect")
             self.btn_download.setEnabled(True)
             self.btn_sync.setEnabled(True)
-            self.lbl_status.setText(f"Status: Connected to {port}")
-            self.lbl_status.setStyleSheet("color: #2ECC71;")
+            self.set_status(f"Connected ({port})", "#27ae60")
             
             self.config[f"default_com_port_{self.meter_id}"] = port
             self.save_config()
@@ -926,8 +937,8 @@ class MeterController(QWidget):
             threading.Thread(target=self.keep_alive_loop, daemon=True).start()
             threading.Thread(target=self.auto_dump_loop, daemon=True).start()
         except Exception as e:
-            self.lbl_status.setText(f"Failed to connect: {e}")
-            self.lbl_status.setStyleSheet("color: #E74C3C;")
+            self.set_status(f"Failed to connect: {e}", "red")
+            self.btn_connect.setText("🔌 Connect")
 
     def disconnect_meter(self):
         self.is_connected = False
@@ -943,10 +954,9 @@ class MeterController(QWidget):
         threading.Thread(target=async_close, args=(self.ser,), daemon=True).start()
         
         self.btn_connect.setText("🔌 Connect")
+        self.set_status("Disconnected", "gray")
         self.btn_download.setEnabled(False)
         self.btn_sync.setEnabled(False)
-        self.lbl_status.setText("Status: Disconnected")
-        self.lbl_status.setStyleSheet("color: gray;")
         self.sn_label.setText("SN: Unknown")
         self.model_label.setText("Model: Unknown")
 
@@ -965,7 +975,7 @@ class MeterController(QWidget):
                         buffer = buffer[idx+1:]
                         self.process_packet(packet)
             except Exception:
-                self.signals.update_status.emit("Status: Disconnected (Error)", "gray")
+                self.set_status("Disconnected (Error)", "red")
                 self.is_connected = False
                 break
             time.sleep(0.05)
@@ -1094,8 +1104,7 @@ class MeterController(QWidget):
                     is_manual = getattr(app, 'manual_snap_requested', False)
                     
                     if (is_continuous or is_manual) and getattr(app, 'dataset_session_dir', None):
-                        # The physical LCD updates ~300ms AFTER the serial packet is sent.
-                        # If we capture instantly, we capture the OLD frame. We must delay.
+                        # The physical LCD updates ~Xms AFTER the serial packet is sent.
                         import time
                         from PyQt6.QtCore import QTimer
                         
@@ -1104,7 +1113,10 @@ class MeterController(QWidget):
                         if is_manual:
                             app.manual_snap_requested = False
                             
-                        def capture_delayed_frame(cap_ts=ts, c_ms=cond_ms, r_cond=raw_cond, m_id=self.meter_id, m_flag=is_manual):
+                        # Retrieve dynamic hardware lag
+                        hw_lag = self.config.get("hardware_lag_ms", 300)
+                        
+                        def capture_delayed_frame(cap_ts=ts, c_ms=cond_ms, r_cond=str(w4), m_id=self.meter_id, m_flag=is_manual):
                             import cv2
                             import os
                             frame = app.ocr_feed_tab.last_frame
@@ -1116,12 +1128,25 @@ class MeterController(QWidget):
                                     
                             if m_flag:
                                 try:
-                                    app.btn_manual_snap.setText("📷 Manual Snap (Wait for Sync)")
+                                    app.btn_manual_snap.setText("📷 Manual Snap (Phase 2)")
                                     app.btn_manual_snap.setEnabled(True)
                                 except: pass
                                 
-                        # Delay exactly 300ms to let the LCD catch up to the USB serial data
-                        QTimer.singleShot(300, capture_delayed_frame)
+                        QTimer.singleShot(hw_lag, capture_delayed_frame)
+                        
+                    # --- PHASE 1: CALIBRATION BURST LOGIC ---
+                    if getattr(app, 'calibration_burst_requested', False):
+                        import time
+                        app.calibration_burst_requested = False
+                        app.calibration_burst_meter = self.meter_id
+                        app.calibration_burst_serial_ts = time.time()
+                        app.calibration_burst_screen_val = cond_ms
+                        app.calibration_burst_count = 15 # 15 frames @ 30 FPS = ~500ms burst
+                        
+                        try:
+                            app.btn_calibration_burst.setText("Recording Burst...")
+                            app.btn_calibration_burst.setEnabled(False)
+                        except: pass
                     
             except Exception: pass
                 
@@ -1170,8 +1195,11 @@ class MeterController(QWidget):
         self.schedule_plot()
 
     def set_status(self, text, color):
-        self.lbl_status.setText(text)
-        self.lbl_status.setStyleSheet(f"color: {color};")
+        if self.app_controller:
+            status_lbl = self.app_controller.status_m1 if self.meter_id == 1 else self.app_controller.status_m2
+            status_lbl.setText(f"M{self.meter_id}: {text}")
+            status_lbl.setStyleSheet(f"color: {color}; font-weight: bold; margin-right: 20px;")
+            
         if text.endswith("(Error)"):
             self.btn_connect.setText("🔌 Connect")
             self.btn_download.setEnabled(False)
@@ -1307,9 +1335,10 @@ class MeterController(QWidget):
             except: pass
 
     def download_memory(self, checked=False):
-        if self.is_connected and self.ser:
-            self.lbl_status.setText("Status: Downloading Memory...")
-            self.ser.write(b"&WA#\r\n")
+        if not self.ser: return
+        self.set_status("Downloading Memory...", "gray")
+        self.btn_download.setEnabled(False)
+        self.ser.write(b"&WA#\r\n")
 
     def save_excel(self, auto=False):
         if self.table.rowCount() == 0:
@@ -1382,8 +1411,7 @@ class MeterController(QWidget):
             doc_ws.column_dimensions["B"].width = 35
             
             wb.save(filepath)
-            if not auto:
-                self.lbl_status.setText(f"Status: Exported to Excel!")
+            self.set_status("Exported to Excel!", "#27ae60")
             self.unsaved_changes = False
         except Exception as e:
             try:
@@ -1670,11 +1698,12 @@ class OCRFeedTab(QWidget):
         gb_global = QGroupBox("Global Controls")
         l_global = QVBoxLayout(gb_global)
         l_global.addWidget(self.app.ocr_checkbox)
+        l_global.addWidget(self.app.mode_combo)
+        l_global.addWidget(self.app.btn_calibration_burst)
         l_global.addWidget(self.app.dataset_checkbox)
         l_global.addWidget(self.app.btn_manual_snap)
-        l_global.addWidget(self.app.ocr_status_label)
         
-        # Focus control
+        # Camera Focus & Index
         self.focus_slider = QSlider(Qt.Orientation.Horizontal)
         self.focus_slider.setRange(-1, 255)
         self.focus_slider.setValue(-1)
@@ -1682,9 +1711,27 @@ class OCRFeedTab(QWidget):
         self.focus_slider.setTickInterval(10)
         self.focus_label = QLabel("Focus: Auto")
         self.focus_slider.valueChanged.connect(self.on_focus_changed)
+        
+        self.camera_index_spin = QSpinBox()
+        self.camera_index_spin.setRange(0, 10)
+        self.camera_index_spin.setValue(self.app.ocr_pipeline.camera_index if self.app and hasattr(self.app, 'ocr_pipeline') else 0)
+        self.camera_index_spin.valueChanged.connect(self.on_camera_index_changed)
+        
+        self.ocr_interval_spin = QDoubleSpinBox()
+        self.ocr_interval_spin.setRange(0.25, 60.0)
+        self.ocr_interval_spin.setDecimals(2)
+        self.ocr_interval_spin.setSingleStep(0.1)
+        self.ocr_interval_spin.setValue(self.app.ocr_pipeline.ocr_interval if self.app and hasattr(self.app, 'ocr_pipeline') else 1.0)
+        self.ocr_interval_spin.valueChanged.connect(self.on_ocr_interval_changed)
+        
         l_global.addWidget(QLabel("Camera Focus:"))
         l_global.addWidget(self.focus_slider)
         l_global.addWidget(self.focus_label)
+        l_global.addWidget(QLabel("Camera Index (0=default web, 1=external):"))
+        l_global.addWidget(self.camera_index_spin)
+        l_global.addWidget(QLabel("OCR Sampling Rate (s) [0.25 - 60.0]:"))
+        l_global.addWidget(self.ocr_interval_spin)
+        
         left_layout.addWidget(gb_global)
         
         # Draw control
@@ -1738,6 +1785,9 @@ class OCRFeedTab(QWidget):
         self.image_label = InteractiveImageLabel("Waiting for OCR Camera Feed...")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setStyleSheet("background-color: black; color: white; font-size: 18px;")
+        self.image_label.setMinimumSize(400, 300)
+        from PyQt6.QtWidgets import QSizePolicy
+        self.image_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.image_label.roi_selected.connect(self.on_roi_selected)
         splitter.addWidget(self.image_label)
         
@@ -1760,6 +1810,19 @@ class OCRFeedTab(QWidget):
             self.focus_label.setText(f"Focus: {val}")
         if hasattr(self.app, 'ocr_pipeline') and self.app.ocr_pipeline:
             self.app.ocr_pipeline.set_focus(val)
+
+    def on_camera_index_changed(self, val):
+        if self.app and hasattr(self.app, 'ocr_pipeline'):
+            self.app.ocr_pipeline.camera_index = val
+            if self.app.ocr_pipeline.is_running:
+                self.app.ocr_pipeline.stop()
+                import time
+                time.sleep(0.5)
+                self.app.ocr_pipeline.start()
+
+    def on_ocr_interval_changed(self, val):
+        if self.app and hasattr(self.app, 'ocr_pipeline'):
+            self.app.ocr_pipeline.ocr_interval = val
 
     def on_roi_selected(self, rect):
         self.current_drawn_rect = rect
@@ -1804,7 +1867,6 @@ class OCRFeedTab(QWidget):
             self.image_label.rubberBand.hide()
         self.current_drawn_rect = None
         
-        import QMessageBox
         QMessageBox.information(self, "ROI Set", f"Successfully set ROI for {name}.")
 
     def clear_roi(self):
@@ -1813,7 +1875,6 @@ class OCRFeedTab(QWidget):
         self.refresh_spinboxes()
         if self.image_label.rubberBand:
             self.image_label.rubberBand.hide()
-        import QMessageBox
         QMessageBox.information(self, "ROI Cleared", "All ROIs have been reset to defaults.")
 
     def on_spinbox_changed(self, name, prop, val):
@@ -1837,7 +1898,6 @@ class OCRFeedTab(QWidget):
         self.app.ocr_pipeline.rois[name] = None
         self.app.ocr_pipeline.save_rois()
         self.refresh_spinboxes()
-        import QMessageBox
         QMessageBox.information(self, "ROI Cleared", f"{name} ROI cleared.")
 
     def refresh_spinboxes(self):
@@ -1856,7 +1916,47 @@ class OCRFeedTab(QWidget):
             for spin in spins.values(): spin.blockSignals(False)
 
     def receive_frame_threadsafe(self, frame):
+        import time
+        import os
+        import cv2
         self.last_frame = frame.copy()
+        
+        # Phase 1: Intercept Calibration Burst
+        if getattr(self.app, 'calibration_burst_count', 0) > 0:
+            self.app.calibration_burst_count -= 1
+            
+            meter_id = getattr(self.app, 'calibration_burst_meter', 1)
+            serial_ts = getattr(self.app, 'calibration_burst_serial_ts', 0)
+            screen_val = getattr(self.app, 'calibration_burst_screen_val', "0.0")
+            frame_ts = time.time()
+            
+            roi_imgs, _ = self.app.ocr_pipeline.extract_crops(frame)
+            roi_name = f"m{meter_id}_cond"
+            roi_img = roi_imgs.get(roi_name)
+            
+            if roi_img is not None and roi_img.size > 0:
+                # Resize to CNN input size (128x128)
+                cnn_img = cv2.resize(roi_img, (128, 128))
+                
+                # Ensure dir exists
+                sess_dir = getattr(self.app, 'calibration_session_dir', None)
+                if not sess_dir:
+                    sess_dir = os.path.join(os.getcwd(), f"calibration_session_{int(serial_ts)}")
+                    self.app.calibration_session_dir = sess_dir
+                    os.makedirs(os.path.join(sess_dir, "extracted_crops"), exist_ok=True)
+                
+                # Save crop directly
+                # Format: screenval_serialts_framets_meterid.jpg
+                filename = f"{screen_val}_{serial_ts:.3f}_{frame_ts:.3f}_{meter_id}.jpg"
+                out_path = os.path.join(sess_dir, "extracted_crops", filename)
+                cv2.imwrite(out_path, cnn_img)
+                
+            if self.app.calibration_burst_count == 0:
+                try:
+                    self.app.btn_calibration_burst.setText("🎯 Capture Calibration Burst (Phase 1)")
+                    self.app.btn_calibration_burst.setEnabled(True)
+                except: pass
+
         self.image_ready.emit(frame)
 
     def set_image(self, frame):
@@ -1887,16 +1987,25 @@ class MeterApp(QMainWindow):
         self.ocr_checkbox.setStyleSheet("font-weight: bold; font-size: 14px; padding: 5px;")
         self.ocr_checkbox.toggled.connect(self.toggle_ocr_mode)
         
-        self.dataset_checkbox = QCheckBox("Record Smart Dataset (Save 1 frame per Serial Reading)")
+        self.dataset_checkbox = QCheckBox("Record Smart Dataset (Phase 2 Data Collection)")
         self.dataset_checkbox.setStyleSheet("font-weight: bold; margin-left: 10px; margin-right: 10px; color: #2980b9;")
         self.dataset_checkbox.stateChanged.connect(self.toggle_dataset_mode)
         
+        self.calibration_burst_requested = False
+        self.calibration_burst_count = 0
+        self.btn_calibration_burst = QPushButton("🎯 Capture Calibration Burst")
+        self.btn_calibration_burst.setStyleSheet("background-color: #8E44AD; color: white; font-weight: bold;")
+        self.btn_calibration_burst.clicked.connect(self.request_calibration_burst)
+        
         self.manual_snap_requested = False
-        self.btn_manual_snap = QPushButton("📷 Manual Snap (Wait for Sync)")
+        self.btn_manual_snap = QPushButton("📷 Manual Snap")
+        self.btn_manual_snap.setStyleSheet("background-color: #2980B9; color: white; font-weight: bold;")
         self.btn_manual_snap.clicked.connect(self.request_manual_snap)
         
-        self.ocr_status_label = QLabel("OCR: Off")
-        self.ocr_status_label.setStyleSheet("color: gray;")
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["Mode: Hardware Calibration (Phase 1)", "Mode: Smart Dataset Collection (Phase 2)"])
+        self.mode_combo.setStyleSheet("font-weight: bold; font-size: 14px; padding: 5px; color: #E67E22;")
+        self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
         
         from ocr_pipeline import MeterOCR
         self.ocr_pipeline = MeterOCR()
@@ -1913,15 +2022,35 @@ class MeterApp(QMainWindow):
 
         self.setCentralWidget(self.tabs)
         
+        # Add Global Status Bar
+        self.status_m1 = QLabel("M1: Disconnected")
+        self.status_m2 = QLabel("M2: Disconnected")
+        self.status_cam = QLabel("Camera: Off")
+        
+        # Style status labels
+        self.status_m1.setStyleSheet("color: gray; font-weight: bold; margin-right: 20px;")
+        self.status_m2.setStyleSheet("color: gray; font-weight: bold; margin-right: 20px;")
+        self.status_cam.setStyleSheet("color: gray; font-weight: bold; margin-right: 20px;")
+        
+        self.statusBar().addWidget(self.status_m1)
+        self.statusBar().addWidget(self.status_m2)
+        self.statusBar().addWidget(self.status_cam)
+        
         self.meter1 = MeterController(meter_id=1, parent_app=self)
         self.meter2 = MeterController(meter_id=2, parent_app=self)
         
         self.settings_tab = SettingsTab(self)
-        self.tabs.addTab(self.settings_tab, "Settings")
         
+        from dataset_curation_tab import DatasetCurationTab
+        self.dataset_curation_tab = DatasetCurationTab(self)
+        
+        self.tabs.addTab(self.settings_tab, "Settings")
         self.tabs.addTab(self.meter1, "Meter 1")
         self.tabs.addTab(self.meter2, "Meter 2")
         self.tabs.addTab(self.ocr_feed_tab, "Live OCR Feed")
+        self.tabs.addTab(self.dataset_curation_tab, "Dataset Curation")
+        
+        self.on_mode_changed(0) # Apply initial mode
         
         try:
             if "app_geometry" in self.meter1.config:
@@ -1968,9 +2097,30 @@ class MeterApp(QMainWindow):
         QApplication.quit()
 
 
+    def on_mode_changed(self, index):
+        if index == 0:
+            self.btn_calibration_burst.show()
+            self.btn_manual_snap.hide()
+            self.dataset_checkbox.hide()
+            self.dataset_checkbox.setChecked(False)
+        else:
+            self.btn_calibration_burst.hide()
+            self.btn_manual_snap.show()
+            self.dataset_checkbox.show()
+
     def set_ocr_status(self, text, color):
-        self.ocr_status_label.setText(text)
-        self.ocr_status_label.setStyleSheet(f"color: {color};")
+        if hasattr(self, 'status_cam'):
+            self.status_cam.setText(text)
+            self.status_cam.setStyleSheet(f"color: {color}; font-weight: bold; margin-right: 20px;")
+
+    def update_meter_status(self, meter_id, is_connected, port=""):
+        status_label = self.status_m1 if meter_id == 1 else self.status_m2
+        if is_connected:
+            status_label.setText(f"M{meter_id}: Connected ({port})")
+            status_label.setStyleSheet("color: #27ae60; font-weight: bold; margin-right: 20px;")
+        else:
+            status_label.setText(f"M{meter_id}: Disconnected")
+            status_label.setStyleSheet("color: gray; font-weight: bold; margin-right: 20px;")
 
     def toggle_ocr_mode(self, state):
         import time
@@ -2031,6 +2181,15 @@ class MeterApp(QMainWindow):
         self.manual_snap_requested = True
         self.btn_manual_snap.setText("⏳ Waiting for Serial...")
         self.btn_manual_snap.setEnabled(False)
+
+    def request_calibration_burst(self):
+        if not self.ocr_checkbox.isChecked():
+            QMessageBox.warning(self, "Camera Off", "Please turn on the camera first so we can capture burst crops.")
+            return
+            
+        self.calibration_burst_requested = True
+        self.btn_calibration_burst.setText("⏳ Waiting for Serial...")
+        self.btn_calibration_burst.setEnabled(False)
 
     def on_ocr_readings(self, readings):
         import time
