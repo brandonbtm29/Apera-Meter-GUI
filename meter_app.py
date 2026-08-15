@@ -1093,23 +1093,26 @@ class MeterController(QWidget):
                 dt_str = f"20{yy:02d}-{mt:02d}-{dd:02d} {hh:02d}:{mm:02d}:{ss:02d}"
                 dt_obj = datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
                 
+                is_dn_packet = packet.startswith(b'<DN')
+                if is_dn_packet:
+                    dt_str += " (Manual)"
+                
                 if dt_str in self.received_timestamps: return
                 self.received_timestamps.add(dt_str)
                 
                 row_data = (dt_str, mode_str, cond_us, cond_ms, f"{temp_c:.1f}", str(w4))
                 
-                is_dn_packet = packet.startswith(b'<DN')
-                if self.is_recording or is_dn_packet:
+                app = self.parent_app
+                is_continuous = getattr(app, 'dataset_checkbox', None) and app.dataset_checkbox.isChecked()
+                is_manual = getattr(app, 'manual_snap_requested', False)
+                
+                if self.is_recording or is_dn_packet or is_manual:
                     if getattr(self, 'ocr_active', False):
                         # Throttle OCR visual logging to 10s if we wanted to
                         pass
                     self.signals.update_tree.emit(dt_obj, row_data)
                     
                 # --- SMART DATASET RECORDING LOGIC ---
-                app = self.parent_app
-                is_continuous = getattr(app, 'dataset_checkbox', None) and app.dataset_checkbox.isChecked()
-                is_manual = getattr(app, 'manual_snap_requested', False)
-                
                 if (is_continuous or is_manual) and getattr(app, 'dataset_session_dir', None):
                     # The physical LCD updates ~Xms AFTER the serial packet is sent.
                     import time
@@ -1154,7 +1157,8 @@ class MeterController(QWidget):
                         app.btn_calibration_burst.setEnabled(False)
                     except: pass
                     
-            except Exception: pass
+            except Exception as e: 
+                print(f"Packet error: {e}")
                 
         elif packet.startswith(b'<SH') and p_len >= 12:
             payload = packet[3:11]
