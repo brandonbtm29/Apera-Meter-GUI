@@ -35,8 +35,13 @@ class DatasetCurationTab(QWidget):
         self.btn_load_manual = QPushButton("📁 Browse Custom Folder...")
         self.btn_load_manual.clicked.connect(self.load_directory)
         
+        self.btn_delete_folder = QPushButton("🗑️ Delete Selected Folder")
+        self.btn_delete_folder.setStyleSheet("background-color: #E74C3C; color: white; font-weight: bold;")
+        self.btn_delete_folder.clicked.connect(self.delete_selected_folder)
+        
         list_top.addWidget(self.btn_refresh)
         list_top.addWidget(self.btn_load_manual)
+        list_top.addWidget(self.btn_delete_folder)
         list_layout.addLayout(list_top)
         
         self.session_list = QListWidget()
@@ -148,6 +153,29 @@ class DatasetCurationTab(QWidget):
         self.current_index = 0 if self.image_files else -1
         self.show_current_image()
         self.stacked.setCurrentWidget(self.page_viewer)
+
+    def delete_selected_folder(self):
+        selected = self.session_list.selectedItems()
+        if not selected:
+            QMessageBox.warning(self, "No Selection", "Please select a session folder from the list first.")
+            return
+            
+        item = selected[0]
+        crop_path = item.data(Qt.ItemDataRole.UserRole)
+        session_dir = os.path.dirname(crop_path)
+        
+        reply = QMessageBox.question(self, "Confirm Delete", 
+                                     f"Are you sure you want to completely delete this dataset/calibration folder and all its contents?\n\n{session_dir}",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                     QMessageBox.StandardButton.No)
+                                     
+        if reply == QMessageBox.StandardButton.Yes:
+            import shutil
+            try:
+                shutil.rmtree(session_dir)
+                self.populate_sessions()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Could not delete folder:\n{e}")
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Left:
