@@ -1113,6 +1113,19 @@ class MeterController(QWidget):
                     self.signals.update_tree.emit(dt_obj, row_data)
                     
                 # --- SMART DATASET RECORDING LOGIC ---
+                if is_manual and not getattr(app, 'dataset_session_dir', None):
+                    import os, time, json
+                    timestamp = int(time.time())
+                    app.dataset_session_dir = os.path.join(os.getcwd(), f"dataset_session_{timestamp}")
+                    frames_dir = os.path.join(app.dataset_session_dir, "frames")
+                    os.makedirs(frames_dir, exist_ok=True)
+                    app.dataset_csv_path = os.path.join(app.dataset_session_dir, "readings.csv")
+                    with open(app.dataset_csv_path, "w", encoding="utf-8") as f:
+                        f.write("timestamp,meter_id,screen_val,unit,raw_cond\n")
+                    rois_path = os.path.join(app.dataset_session_dir, "rois.json")
+                    with open(rois_path, "w") as f:
+                        json.dump(app.ocr_pipeline.rois, f)
+
                 if (is_continuous or is_manual) and getattr(app, 'dataset_session_dir', None):
                     # The physical LCD updates ~Xms AFTER the serial packet is sent.
                     from PyQt6.QtCore import QTimer
@@ -1965,6 +1978,8 @@ class OCRFeedTab(QWidget):
                     self.app.btn_calibration_burst.setText("🎯 Capture Calibration Burst (Phase 1)")
                     self.app.btn_calibration_burst.setEnabled(True)
                 except: pass
+                
+                self.app.calibration_session_dir = None
 
         self.image_ready.emit(frame)
 
