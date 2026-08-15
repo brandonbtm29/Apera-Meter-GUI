@@ -1094,29 +1094,34 @@ class MeterController(QWidget):
                     is_manual = getattr(app, 'manual_snap_requested', False)
                     
                     if (is_continuous or is_manual) and getattr(app, 'dataset_session_dir', None):
-                        # Grab the current frame
-                        frame = app.ocr_feed_tab.last_frame
-                        if frame is not None:
-                            import cv2
-                            import time
-                            import os
-                            ts = time.time()
-                            frame_path = os.path.join(app.dataset_session_dir, "frames", f"frame_{ts}.jpg")
-                            cv2.imwrite(frame_path, frame)
-                            
-                            with open(app.dataset_csv_path, "a", encoding="utf-8") as f:
-                                # Write true screen_val from Serial
-                                f.write(f"{ts},{self.meter_id},{cond_ms},mS,{raw_cond}\n")
-                                
+                        # The physical LCD updates ~300ms AFTER the serial packet is sent.
+                        # If we capture instantly, we capture the OLD frame. We must delay.
+                        import time
+                        from PyQt6.QtCore import QTimer
+                        
+                        ts = time.time()
+                        
                         if is_manual:
                             app.manual_snap_requested = False
-                            try:
-                                def reset_btn():
+                            
+                        def capture_delayed_frame(cap_ts=ts, c_ms=cond_ms, r_cond=raw_cond, m_id=self.meter_id, m_flag=is_manual):
+                            import cv2
+                            import os
+                            frame = app.ocr_feed_tab.last_frame
+                            if frame is not None:
+                                frame_path = os.path.join(app.dataset_session_dir, "frames", f"frame_{cap_ts}.jpg")
+                                cv2.imwrite(frame_path, frame)
+                                with open(app.dataset_csv_path, "a", encoding="utf-8") as f:
+                                    f.write(f"{cap_ts},{m_id},{c_ms},mS,{r_cond}\n")
+                                    
+                            if m_flag:
+                                try:
                                     app.btn_manual_snap.setText("📷 Manual Snap (Wait for Sync)")
                                     app.btn_manual_snap.setEnabled(True)
-                                from PyQt6.QtCore import QTimer
-                                QTimer.singleShot(0, reset_btn)
-                            except: pass
+                                except: pass
+                                
+                        # Delay exactly 300ms to let the LCD catch up to the USB serial data
+                        QTimer.singleShot(300, capture_delayed_frame)
                     
             except Exception: pass
                 
