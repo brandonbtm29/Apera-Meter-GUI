@@ -101,7 +101,7 @@ class DatasetCurationTab(QWidget):
         self.table_images.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.table_images.verticalHeader().setVisible(False)
         self.table_images.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table_images.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table_images.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.table_images.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table_images.setIconSize(QSize(100, 100))
         self.table_images.setStyleSheet("background-color: #1E1E1E; color: #FFF; font-size: 14px;")
@@ -254,14 +254,20 @@ class DatasetCurationTab(QWidget):
         m1_lag = self.app.meter1.config.get("hardware_lag_ms", 0.0)
         self.lbl_m1_lag.setText(f"M1 Lag: {m1_lag:.1f} ms")
         self.list_m1_lag.clear()
-        for lag in self.app.meter1.config.get("lag_measurements", []):
-            self.list_m1_lag.addItem(f"{lag:.1f}")
+        for item in self.app.meter1.config.get("lag_measurements", []):
+            if isinstance(item, dict):
+                self.list_m1_lag.addItem(f"{item.get('lag', 0.0):.1f} ms ({item.get('source', 'Unknown')})")
+            else:
+                self.list_m1_lag.addItem(f"{item:.1f} ms (Unknown)")
             
         m2_lag = self.app.meter2.config.get("hardware_lag_ms", 0.0)
         self.lbl_m2_lag.setText(f"M2 Lag: {m2_lag:.1f} ms")
         self.list_m2_lag.clear()
-        for lag in self.app.meter2.config.get("lag_measurements", []):
-            self.list_m2_lag.addItem(f"{lag:.1f}")
+        for item in self.app.meter2.config.get("lag_measurements", []):
+            if isinstance(item, dict):
+                self.list_m2_lag.addItem(f"{item.get('lag', 0.0):.1f} ms ({item.get('source', 'Unknown')})")
+            else:
+                self.list_m2_lag.addItem(f"{item:.1f} ms (Unknown)")
         
     def load_directory(self):
         dir_path = QFileDialog.getExistingDirectory(self, "Select Dataset Folder (Extracted Crops)")
@@ -414,40 +420,73 @@ class DatasetCurationTab(QWidget):
         selected_items = self.table_images.selectedItems()
         if not selected_items: return
         
-        row = selected_items[0].row()
-        icon_item = self.table_images.item(row, 5)
-        if not icon_item: return
-        file_path = icon_item.data(Qt.ItemDataRole.UserRole)
-        filename = os.path.basename(file_path)
-        parts = filename.replace('.jpg', '').split('_')
+        # Get unique selected rows
+        selected_rows = sorted(list(set([item.row() for item in selected_items])))
         
-        if len(parts) >= 4:
-            screen_val = parts[0]
-            try:
-                serial_ts = float(parts[1])
-                frame_ts = float(parts[2])
-                meter_id = parts[3]
+        frame_ts_list = []
+        base_serial_ts = None
+        base_meter_id = None
+        
+        for row in selected_rows:
+            icon_item = self.table_images.item(row, 5)
+            if not icon_item: continue
+            file_path = icon_item.data(Qt.ItemDataRole.UserRole)
+            filename = os.path.basename(file_path)
+            parts = filename.replace('.jpg', '').split('_')
+            
+            if len(parts) >= 4:
+                try:
+                    serial_ts = float(parts[1])
+                    frame_ts = float(parts[2])
+                    meter_id = parts[3]
+                    
+                    if base_serial_ts is None:
+                        base_serial_ts = serial_ts
+                        base_meter_id = meter_id
+                    elif base_serial_ts != serial_ts or base_meter_id != meter_id:
+                        QMessageBox.warning(self, "Mismatch", "All selected rows must belong to the same serial measurement (same serial_ts and meter_id).")
+                        return
+                        
+                    frame_ts_list.append(frame_ts)
+                except ValueError:
+                    QMessageBox.warning(self, "Error", "Filename timestamp format invalid.")
+                    return
+            else:
+                QMessageBox.warning(self, "Error", "Filename format invalid for calibration.")
+                return
                 
-                lag_ms = (frame_ts - serial_ts) * 1000.0
-                
-                reply = QMessageBox.question(
-                    self, "Confirm Lag Calibration", 
-                    f"Add {lag_ms:.1f} ms to Meter {meter_id}'s hardware lag measurements?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                )
-                
-                if reply == QMessageBox.StandardButton.Yes:
-                    if self.app:
-                        meter = self.app.meter1 if str(meter_id) == "1" else self.app.meter2
-                        measurements = meter.config.setdefault("lag_measurements", [])
-                        measurements.append(lag_ms)
-                        meter.save_config()
-                        self.refresh_lag_labels()
-                        QMessageBox.information(self, "Success", f"Measurement added to Meter {meter_id}.")
-            except ValueError:
-                QMessageBox.warning(self, "Error", "Filename timestamp format invalid.")
+        if not frame_ts_list:
+            return
+            
+        frame_ts_list.sort()
+        n = len(frame_ts_list)
+        if n % 2 != 0:
+            median_frame_ts = frame_ts_list[n // 2]
         else:
-            QMessageBox.warning(self, "Error", "Filename format invalid for calibration.")
+            median_frame_ts = (frame_ts_list[(n // 2) - 1] + frame_ts_list[n // 2]) / 2.0
+            
+        lag_ms = (median_frame_ts - base_serial_ts) * 1000.0
+        
+        reply = QMessageBox.question(
+            self, "Confirm Lag Calibration", 
+            f"Calculate median lag from {n} selected frame(s).\nAdd {lag_ms:.1f} ms to Meter {base_meter_id}'s hardware lag measurements?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            if self.app:
+                meter = self.app.meter1 if str(base_meter_id) == "1" else self.app.meter2
+                measurements = meter.config.setdefault("lag_measurements", [])
+                
+                # Try to extract the folder name as the source
+                source_name = "Unknown"
+                if self.current_dir:
+                    source_name = os.path.basename(os.path.dirname(self.current_dir))
+                    
+                measurements.append({"lag": lag_ms, "source": source_name})
+                meter.save_config()
+                self.refresh_lag_labels()
+                QMessageBox.information(self, "Success", f"Measurement added to Meter {base_meter_id}.")
 
     def update_ui_state(self):
         has_selection = len(self.table_images.selectedItems()) > 0
@@ -475,7 +514,14 @@ class DatasetCurationTab(QWidget):
             QMessageBox.warning(self, "Error", "No measurements to average.")
             return
             
-        avg_lag = sum(measurements) / len(measurements)
+        values = []
+        for m in measurements:
+            if isinstance(m, dict):
+                values.append(m.get('lag', 0.0))
+            else:
+                values.append(m)
+                
+        avg_lag = sum(values) / len(values)
         
         reply = QMessageBox.question(self, "Confirm Average",
                                      f"Average is {avg_lag:.1f} ms.\nApply this to Meter {meter_id}?",
