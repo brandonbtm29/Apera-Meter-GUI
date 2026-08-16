@@ -1191,7 +1191,7 @@ class MeterController(QWidget):
                                 app.btn_manual_snap.setEnabled(True)
                             except: pass
                             
-                    QTimer.singleShot(hw_lag, capture_delayed_frame)
+                    QTimer.singleShot(int(hw_lag), capture_delayed_frame)
                     
                 # --- PHASE 1: CALIBRATION BURST LOGIC ---
                 if getattr(app, 'calibration_burst_requested', False):
