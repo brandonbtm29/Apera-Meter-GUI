@@ -1072,7 +1072,12 @@ class MeterController(QWidget):
                         cond_ms = f"{val_float / 1000:.3f}"
                         cond_us = f"{val_float:.1f}"
                         cond_us_val = val_float
-                    try: self.last_serial_cond_ms = float(cond_ms)
+                    val_changed = False
+                    try: 
+                        new_ms = float(cond_ms)
+                        if getattr(self, 'last_serial_cond_ms', None) != new_ms:
+                            val_changed = True
+                        self.last_serial_cond_ms = new_ms
                     except: pass
                 else:
                     cond_us = str(val_float)
@@ -1176,15 +1181,18 @@ class MeterController(QWidget):
                     
                 # --- PHASE 1: CALIBRATION BURST LOGIC ---
                 if getattr(app, 'calibration_burst_requested', False):
-                    app.calibration_burst_requested = False
-                    app.calibration_burst_meter = self.meter_id
-                    app.calibration_burst_serial_ts = time.time()
-                    app.calibration_burst_screen_val = cond_ms
-                    app.calibration_burst_count = 15 # 15 frames @ 30 FPS = ~500ms burst
-                    try:
-                        app.btn_calibration_burst.setText("Recording Burst...")
-                        app.btn_calibration_burst.setEnabled(False)
-                    except: pass
+                    # Only consume the calibration burst if the meter's value actually changed,
+                    # or if the user triggered a physical manual snap for this specific meter!
+                    if is_manual or locals().get('val_changed', False):
+                        app.calibration_burst_requested = False
+                        app.calibration_burst_meter = self.meter_id
+                        app.calibration_burst_serial_ts = time.time()
+                        app.calibration_burst_screen_val = cond_ms
+                        app.calibration_burst_count = 15 # 15 frames @ 30 FPS = ~500ms burst
+                        try:
+                            app.btn_calibration_burst.setText("Recording Burst...")
+                            app.btn_calibration_burst.setEnabled(False)
+                        except: pass
                     
             except Exception as e: 
                 print(f"Packet error: {e}")
