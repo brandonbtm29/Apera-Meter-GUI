@@ -620,9 +620,12 @@ class MeterController(QWidget):
     def toggle_global_template(self):
         use_global = self.chk_use_global_template.isChecked()
         self.ent_save_template.setEnabled(not use_global)
-        if getattr(self, 'app', None):
+        if getattr(self, 'app_controller', None):
             self.app_controller.shared_config[f"use_global_{self.meter_id}"] = use_global
             self.app_controller.save_config()
+            if use_global:
+                global_template = self.app_controller.shared_config.get("global_filename_template", "<Meter ID>_<Date>_<Time>")
+                self.ent_save_template.setText(global_template)
 
     def get_resolved_string(self, template):
         import datetime
@@ -1185,6 +1188,8 @@ class MeterController(QWidget):
                     # or if the user triggered a physical manual snap for this specific meter!
                     if is_manual or locals().get('val_changed', False):
                         app.calibration_burst_requested = False
+                        if hasattr(app, 'bursts_remaining'):
+                            app.bursts_remaining -= 1
                         app.calibration_burst_meter = self.meter_id
                         app.calibration_burst_serial_ts = time.time()
                         app.calibration_burst_screen_val = cond_ms
@@ -1671,6 +1676,12 @@ class SettingsTab(QWidget):
         self.parent_app.meter1.update_button_styles(style)
         self.parent_app.meter2.update_button_styles(style)
         
+        # Sync UI template
+        if self.parent_app.meter1.chk_use_global_template.isChecked():
+            self.parent_app.meter1.ent_save_template.setText(self.ent_template.text())
+        if self.parent_app.meter2.chk_use_global_template.isChecked():
+            self.parent_app.meter2.ent_save_template.setText(self.ent_template.text())
+        
         self.parent_app.meter1.save_config()
         self.parent_app.meter2.save_config()
         
@@ -1746,7 +1757,12 @@ class OCRFeedTab(QWidget):
         l_global = QVBoxLayout(gb_global)
         l_global.addWidget(self.app.ocr_checkbox)
         l_global.addWidget(self.app.mode_combo)
-        l_global.addWidget(self.app.btn_calibration_burst)
+        
+        burst_layout = QHBoxLayout()
+        burst_layout.addWidget(self.app.btn_calibration_burst)
+        burst_layout.addWidget(self.app.spin_burst_count)
+        l_global.addLayout(burst_layout)
+        
         l_global.addWidget(self.app.dataset_checkbox)
         l_global.addWidget(self.app.btn_manual_snap)
         l_global.addWidget(self.app.chk_apply_lag)
@@ -2008,7 +2024,14 @@ class OCRFeedTab(QWidget):
                 except: pass
                 
                 self.app.calibration_session_dir = None
-
+                
+                bursts_rem = getattr(self.app, 'bursts_remaining', 0)
+                if bursts_rem > 0:
+                    self.app.calibration_burst_requested = True
+                    try:
+                        self.app.btn_calibration_burst.setText(f"⏳ Waiting for Serial ({bursts_rem} left)...")
+                        self.app.btn_calibration_burst.setEnabled(False)
+                    except: pass
         self.image_ready.emit(frame)
 
     def set_image(self, frame):
@@ -2043,6 +2066,13 @@ class MeterApp(QMainWindow):
         self.dataset_checkbox.setStyleSheet("font-weight: bold; margin-left: 10px; margin-right: 10px; color: #2980b9;")
         self.dataset_checkbox.stateChanged.connect(self.toggle_dataset_mode)
         
+        self.spin_burst_count = QSpinBox()
+        self.spin_burst_count.setRange(1, 100)
+        self.spin_burst_count.setValue(1)
+        self.spin_burst_count.setPrefix("Bursts: ")
+        self.spin_burst_count.setStyleSheet("font-weight: bold; font-size: 13px; margin-left: 20px;")
+        
+        self.bursts_remaining = 0
         self.calibration_burst_requested = False
         self.calibration_burst_count = 0
         self.btn_calibration_burst = QPushButton("🎯 Capture Calibration Burst")
@@ -2247,8 +2277,9 @@ class MeterApp(QMainWindow):
             QMessageBox.warning(self, "Camera Off", "Please turn on the camera first so we can capture burst crops.")
             return
             
+        self.bursts_remaining = self.spin_burst_count.value()
         self.calibration_burst_requested = True
-        self.btn_calibration_burst.setText("⏳ Waiting for Serial...")
+        self.btn_calibration_burst.setText(f"⏳ Waiting for Serial ({self.bursts_remaining} left)...")
         self.btn_calibration_burst.setEnabled(False)
 
     def _sanitize_ocr_value(self, ocr_val, last_serial_ms):
