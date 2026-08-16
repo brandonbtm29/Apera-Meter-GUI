@@ -396,8 +396,33 @@ class MeterOCR:
                     break
                 result_str += str(digit)
                 
+        # Additional filtering: max 4 digits, first digit can only be 1
+        digits = [c for c in result_str if c.isdigit()]
+        decimal_offset = result_str.find('.')
+        digits_before = 0
+        if decimal_offset != -1:
+            digits_before = len([c for c in result_str[:decimal_offset] if c.isdigit()])
+            
+        while len(digits) > 4:
+            digits.pop(0)
+            if decimal_offset != -1:
+                digits_before = max(0, digits_before - 1)
+                
+        if len(digits) == 4 and digits[0] != '1':
+            digits.pop(0)
+            if decimal_offset != -1:
+                digits_before = max(0, digits_before - 1)
+                
+        if not digits:
+            return 0.0
+            
+        if decimal_offset != -1:
+            digits.insert(digits_before, '.')
+            
+        result_str = "".join(digits)
+        
         try:
-            return float(result_str) if result_str else 0.0
+            return float(result_str)
         except:
             return 0.0
 
