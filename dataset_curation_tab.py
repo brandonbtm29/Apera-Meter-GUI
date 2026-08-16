@@ -84,6 +84,15 @@ class DatasetCurationTab(QWidget):
         
         viewer_layout.addLayout(top_layout)
         
+        # Create Splitter
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        viewer_layout.addWidget(self.splitter, stretch=1)
+        
+        # Left Side: Table and Controls
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        
         # Image display
         self.table_images = QTableWidget()
         self.table_images.setColumnCount(6)
@@ -97,7 +106,7 @@ class DatasetCurationTab(QWidget):
         self.table_images.setIconSize(QSize(100, 100))
         self.table_images.setStyleSheet("background-color: #1E1E1E; color: #FFF; font-size: 14px;")
         self.table_images.itemSelectionChanged.connect(self.on_image_selected)
-        viewer_layout.addWidget(self.table_images, stretch=1)
+        left_layout.addWidget(self.table_images, stretch=1)
         
         # Control Panel (Bottom)
         control_layout = QHBoxLayout()
@@ -121,7 +130,53 @@ class DatasetCurationTab(QWidget):
         control_layout.addWidget(self.btn_set_sync)
         control_layout.addSpacing(20)
         control_layout.addWidget(self.btn_delete)
-        viewer_layout.addLayout(control_layout)
+        left_layout.addLayout(control_layout)
+        
+        self.splitter.addWidget(left_widget)
+        
+        # Right Side: Lag Measurements
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        
+        lbl_right_title = QLabel("Hardware Lag Measurements")
+        lbl_right_title.setStyleSheet("font-weight: bold; font-size: 14px;")
+        right_layout.addWidget(lbl_right_title)
+        
+        # Meter 1 List
+        right_layout.addWidget(QLabel("Meter 1 (ms):"))
+        self.list_m1_lag = QListWidget()
+        right_layout.addWidget(self.list_m1_lag, stretch=1)
+        
+        m1_btn_layout = QHBoxLayout()
+        self.btn_del_m1 = QPushButton("Delete Entry")
+        self.btn_del_m1.clicked.connect(lambda: self.delete_lag_entry(1))
+        self.btn_avg_m1 = QPushButton("Average & Apply")
+        self.btn_avg_m1.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        self.btn_avg_m1.clicked.connect(lambda: self.average_and_apply(1))
+        m1_btn_layout.addWidget(self.btn_del_m1)
+        m1_btn_layout.addWidget(self.btn_avg_m1)
+        right_layout.addLayout(m1_btn_layout)
+        
+        right_layout.addSpacing(15)
+        
+        # Meter 2 List
+        right_layout.addWidget(QLabel("Meter 2 (ms):"))
+        self.list_m2_lag = QListWidget()
+        right_layout.addWidget(self.list_m2_lag, stretch=1)
+        
+        m2_btn_layout = QHBoxLayout()
+        self.btn_del_m2 = QPushButton("Delete Entry")
+        self.btn_del_m2.clicked.connect(lambda: self.delete_lag_entry(2))
+        self.btn_avg_m2 = QPushButton("Average & Apply")
+        self.btn_avg_m2.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold;")
+        self.btn_avg_m2.clicked.connect(lambda: self.average_and_apply(2))
+        m2_btn_layout.addWidget(self.btn_del_m2)
+        m2_btn_layout.addWidget(self.btn_avg_m2)
+        right_layout.addLayout(m2_btn_layout)
+        
+        self.splitter.addWidget(right_widget)
+        self.splitter.setSizes([800, 300])  # Initial relative widths
         
         self.stacked.addWidget(self.page_viewer)
         
@@ -193,9 +248,15 @@ class DatasetCurationTab(QWidget):
         
         m1_lag = self.app.meter1.config.get("hardware_lag_ms", 0.0)
         self.lbl_m1_lag.setText(f"M1 Lag: {m1_lag:.1f} ms")
-        
+        self.list_m1_lag.clear()
+        for lag in self.app.meter1.config.get("lag_measurements", []):
+            self.list_m1_lag.addItem(f"{lag:.1f}")
+            
         m2_lag = self.app.meter2.config.get("hardware_lag_ms", 0.0)
         self.lbl_m2_lag.setText(f"M2 Lag: {m2_lag:.1f} ms")
+        self.list_m2_lag.clear()
+        for lag in self.app.meter2.config.get("lag_measurements", []):
+            self.list_m2_lag.addItem(f"{lag:.1f}")
         
     def load_directory(self):
         dir_path = QFileDialog.getExistingDirectory(self, "Select Dataset Folder (Extracted Crops)")
@@ -366,23 +427,18 @@ class DatasetCurationTab(QWidget):
                 
                 reply = QMessageBox.question(
                     self, "Confirm Lag Calibration", 
-                    f"Set hardware lag to {lag_ms:.1f} ms for Meter {meter_id}?\n\n"
-                    f"This tells the software that the camera feed is {lag_ms:.1f} ms behind the serial measurement for M{meter_id}.",
+                    f"Add {lag_ms:.1f} ms to Meter {meter_id}'s hardware lag measurements?",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                 )
                 
                 if reply == QMessageBox.StandardButton.Yes:
                     if self.app:
-                        if str(meter_id) == "1":
-                            self.app.meter1.config["hardware_lag_ms"] = lag_ms
-                            self.app.meter1.spin_lag.setValue(lag_ms)
-                            self.app.meter1.save_config()
-                        elif str(meter_id) == "2":
-                            self.app.meter2.config["hardware_lag_ms"] = lag_ms
-                            self.app.meter2.spin_lag.setValue(lag_ms)
-                            self.app.meter2.save_config()
+                        meter = self.app.meter1 if str(meter_id) == "1" else self.app.meter2
+                        measurements = meter.config.setdefault("lag_measurements", [])
+                        measurements.append(lag_ms)
+                        meter.save_config()
                         self.refresh_lag_labels()
-                        QMessageBox.information(self, "Success", f"Hardware lag saved to Meter {meter_id}: {lag_ms:.1f} ms")
+                        QMessageBox.information(self, "Success", f"Measurement added to Meter {meter_id}.")
             except ValueError:
                 QMessageBox.warning(self, "Error", "Filename timestamp format invalid.")
         else:
@@ -394,3 +450,35 @@ class DatasetCurationTab(QWidget):
         self.btn_delete.setEnabled(has_selection)
         self.btn_set_sync.setEnabled(has_selection)
         self.edit_label.setEnabled(has_selection)
+
+    def delete_lag_entry(self, meter_id):
+        lst = self.list_m1_lag if meter_id == 1 else self.list_m2_lag
+        meter = self.app.meter1 if meter_id == 1 else self.app.meter2
+        row = lst.currentRow()
+        if row < 0: return
+        
+        measurements = meter.config.get("lag_measurements", [])
+        if 0 <= row < len(measurements):
+            measurements.pop(row)
+            meter.save_config()
+            self.refresh_lag_labels()
+
+    def average_and_apply(self, meter_id):
+        meter = self.app.meter1 if meter_id == 1 else self.app.meter2
+        measurements = meter.config.get("lag_measurements", [])
+        if not measurements:
+            QMessageBox.warning(self, "Error", "No measurements to average.")
+            return
+            
+        avg_lag = sum(measurements) / len(measurements)
+        
+        reply = QMessageBox.question(self, "Confirm Average",
+                                     f"Average is {avg_lag:.1f} ms.\nApply this to Meter {meter_id}?",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            meter.config["hardware_lag_ms"] = avg_lag
+            meter.spin_lag.setValue(avg_lag)
+            meter.save_config()
+            self.refresh_lag_labels()
+            QMessageBox.information(self, "Success", f"Applied {avg_lag:.1f} ms to Meter {meter_id}.")
