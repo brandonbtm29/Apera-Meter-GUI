@@ -622,7 +622,7 @@ class MeterController(QWidget):
         self.ent_save_template.setEnabled(not use_global)
         if getattr(self, 'app_controller', None):
             self.app_controller.shared_config[f"use_global_{self.meter_id}"] = use_global
-            self.app_controller.save_config()
+            self.save_config()
             if use_global:
                 global_template = self.app_controller.shared_config.get("global_filename_template", "<Meter ID>_<Date>_<Time>")
                 self.ent_save_template.setText(global_template)
