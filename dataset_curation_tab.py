@@ -68,10 +68,19 @@ class DatasetCurationTab(QWidget):
         
         self.lbl_info = QLabel("No directory loaded.")
         
+        self.lbl_m1_lag = QLabel("M1 Lag: N/A")
+        self.lbl_m1_lag.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 14px;")
+        self.lbl_m2_lag = QLabel("M2 Lag: N/A")
+        self.lbl_m2_lag.setStyleSheet("color: #2196F3; font-weight: bold; font-size: 14px;")
+        
         top_layout.addWidget(self.btn_back)
         top_layout.addSpacing(20)
         top_layout.addWidget(self.lbl_info)
         top_layout.addStretch()
+        top_layout.addWidget(self.lbl_m1_lag)
+        top_layout.addSpacing(20)
+        top_layout.addWidget(self.lbl_m2_lag)
+        top_layout.addSpacing(10)
         
         viewer_layout.addLayout(top_layout)
         
@@ -179,6 +188,15 @@ class DatasetCurationTab(QWidget):
         else:
             super().keyPressEvent(event)
             
+    def refresh_lag_labels(self):
+        if not self.app: return
+        
+        m1_lag = self.app.meter1.config.get("hardware_lag_ms", 0.0)
+        self.lbl_m1_lag.setText(f"M1 Lag: {m1_lag:.1f} ms")
+        
+        m2_lag = self.app.meter2.config.get("hardware_lag_ms", 0.0)
+        self.lbl_m2_lag.setText(f"M2 Lag: {m2_lag:.1f} ms")
+        
     def load_directory(self):
         dir_path = QFileDialog.getExistingDirectory(self, "Select Dataset Folder (Extracted Crops)")
         if dir_path:
@@ -189,6 +207,7 @@ class DatasetCurationTab(QWidget):
     def refresh_file_list(self):
         self.table_images.setRowCount(0)
         self.image_files = []
+        self.refresh_lag_labels()
         if not self.current_dir: return
         
         search_path = os.path.join(self.current_dir, "*.jpg")
@@ -362,6 +381,7 @@ class DatasetCurationTab(QWidget):
                             self.app.meter2.config["hardware_lag_ms"] = lag_ms
                             self.app.meter2.spin_lag.setValue(lag_ms)
                             self.app.meter2.save_config()
+                        self.refresh_lag_labels()
                         QMessageBox.information(self, "Success", f"Hardware lag saved to Meter {meter_id}: {lag_ms:.1f} ms")
             except ValueError:
                 QMessageBox.warning(self, "Error", "Filename timestamp format invalid.")
