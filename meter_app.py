@@ -887,6 +887,7 @@ class MeterController(QWidget):
                     time.sleep(0.3)
                     resp = ts.read(ts.in_waiting)
                     ts.close()
+                    time.sleep(1.0) # Let Windows fully release the COM port handle
                     if b'<SH' in resp or b'<SL' in resp or b'#>' in resp:
                         return p
                 except: pass
@@ -918,10 +919,15 @@ class MeterController(QWidget):
             return
             
         self.scan_id = None
-        self._finish_connect(port)
+        self.btn_connect.setEnabled(False)
+        self.btn_connect.setText("⏳ Connecting...")
+        # Add a 1.5s delay to ensure previous handles are completely freed
+        QTimer.singleShot(1500, lambda: self._finish_connect(port))
 
     def _scan_thread_task(self, scan_id=None):
         found_port = self.find_apera_meter()
+        if found_port:
+            time.sleep(1.5) # Extra buffer time after scanner closes the port
         QTimer.singleShot(0, lambda: self._finish_connect(found_port, scan_id))
 
     def _finish_connect(self, port, scan_id=None):
