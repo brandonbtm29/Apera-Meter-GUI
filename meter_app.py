@@ -228,6 +228,16 @@ class MeterController(QWidget):
         self.auto_dump_entry.textChanged.connect(self._save_auto_dump_config)
         l_rec.addWidget(self.auto_dump_entry)
         
+        lag_layout = QHBoxLayout()
+        lag_layout.addWidget(QLabel("Hardware Lag (ms):"))
+        self.spin_lag = QDoubleSpinBox()
+        self.spin_lag.setRange(-2000.0, 2000.0)
+        self.spin_lag.setDecimals(1)
+        self.spin_lag.setValue(float(self.config.get("hardware_lag_ms", 300.0)))
+        self.spin_lag.valueChanged.connect(self._save_hardware_lag)
+        lag_layout.addWidget(self.spin_lag)
+        l_rec.addLayout(lag_layout)
+        
         self.gb_rec.setLayout(l_rec)
         left_layout.addWidget(self.gb_rec)
         
@@ -657,6 +667,10 @@ class MeterController(QWidget):
                 self.txt_notes.append("[Auto-Save] Data saved to directory automatically upon pause.")
             self.ax.set_title(f"Live (Not Recording): Conductivity (Meter {self.meter_id})")
         self.canvas.draw_idle()
+
+    def _save_hardware_lag(self, val):
+        self.config["hardware_lag_ms"] = float(val)
+        self.save_config()
 
     def _auto_chk_changed(self):
         try:

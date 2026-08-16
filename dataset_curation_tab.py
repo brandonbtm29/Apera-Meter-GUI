@@ -298,9 +298,11 @@ class DatasetCurationTab(QWidget):
                     if self.app:
                         if str(meter_id) == "1":
                             self.app.meter1.config["hardware_lag_ms"] = lag_ms
+                            self.app.meter1.spin_lag.setValue(lag_ms)
                             self.app.meter1.save_config()
                         elif str(meter_id) == "2":
                             self.app.meter2.config["hardware_lag_ms"] = lag_ms
+                            self.app.meter2.spin_lag.setValue(lag_ms)
                             self.app.meter2.save_config()
                         QMessageBox.information(self, "Success", f"Hardware lag saved to Meter {meter_id}: {lag_ms:.1f} ms")
             except ValueError:
