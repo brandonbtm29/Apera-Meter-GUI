@@ -3,7 +3,8 @@ import glob
 from datetime import datetime
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                              QLabel, QFileDialog, QLineEdit, QMessageBox, QComboBox,
-                             QStackedWidget, QListWidget, QListWidgetItem)
+                             QStackedWidget, QListWidget, QListWidgetItem,
+                             QTableWidget, QTableWidgetItem, QHeaderView)
 from PyQt6.QtGui import QPixmap, QImage, QIcon
 from PyQt6.QtCore import Qt, QSize
 
@@ -75,14 +76,22 @@ class DatasetCurationTab(QWidget):
         viewer_layout.addLayout(top_layout)
         
         # Image display
-        self.list_images = QListWidget()
-        self.list_images.setViewMode(QListWidget.ViewMode.IconMode)
-        self.list_images.setIconSize(QSize(250, 250))
-        self.list_images.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self.list_images.setSpacing(10)
-        self.list_images.setStyleSheet("background-color: #1E1E1E; color: #FFF; font-size: 14px; padding: 10px;")
-        self.list_images.itemSelectionChanged.connect(self.on_image_selected)
-        viewer_layout.addWidget(self.list_images, stretch=1)
+        self.table_images = QTableWidget()
+        self.table_images.setColumnCount(5)
+        self.table_images.setHorizontalHeaderLabels(["Thumbnail", "Burst Entry #", "Meter ID", "Serial Value", "Hardware Lag (ms)"])
+        self.table_images.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table_images.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table_images.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table_images.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.table_images.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table_images.verticalHeader().setVisible(False)
+        self.table_images.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table_images.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table_images.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table_images.setIconSize(QSize(150, 150))
+        self.table_images.setStyleSheet("background-color: #1E1E1E; color: #FFF; font-size: 14px;")
+        self.table_images.itemSelectionChanged.connect(self.on_image_selected)
+        viewer_layout.addWidget(self.table_images, stretch=1)
         
         # Control Panel (Bottom)
         control_layout = QHBoxLayout()
@@ -181,7 +190,7 @@ class DatasetCurationTab(QWidget):
             self.stacked.setCurrentWidget(self.page_viewer)
 
     def refresh_file_list(self):
-        self.list_images.clear()
+        self.table_images.setRowCount(0)
         self.image_files = []
         if not self.current_dir: return
         
@@ -189,39 +198,87 @@ class DatasetCurationTab(QWidget):
         self.image_files = sorted(glob.glob(search_path))
         self.lbl_info.setText(f"Found {len(self.image_files)} images.")
         
-        for file_path in self.image_files:
+        self.table_images.setRowCount(len(self.image_files))
+        
+        for row, file_path in enumerate(self.image_files):
             filename = os.path.basename(file_path)
-            item = QListWidgetItem(filename)
-            item.setData(Qt.ItemDataRole.UserRole, file_path)
-            item.setIcon(QIcon(file_path))
-            self.list_images.addItem(item)
+            parts = filename.replace('.jpg', '').split('_')
+            
+            # Column 0: Thumbnail
+            icon_item = QTableWidgetItem()
+            icon_item.setIcon(QIcon(file_path))
+            icon_item.setData(Qt.ItemDataRole.UserRole, file_path)
+            self.table_images.setItem(row, 0, icon_item)
+            
+            # Column 1: Burst Entry #
+            entry_item = QTableWidgetItem(str(row + 1))
+            entry_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table_images.setItem(row, 1, entry_item)
+            
+            if len(parts) >= 4:
+                screen_val = parts[0]
+                try:
+                    serial_ts = float(parts[1])
+                    frame_ts = float(parts[2])
+                    meter_id = parts[3]
+                    lag_ms = (frame_ts - serial_ts) * 1000.0
+                except:
+                    serial_ts, frame_ts, meter_id, lag_ms = 0.0, 0.0, "?", 0.0
+                    
+                # Column 2: Meter ID
+                m_item = QTableWidgetItem(f"Meter {meter_id}")
+                m_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table_images.setItem(row, 2, m_item)
+                
+                # Column 3: Serial Value
+                val_item = QTableWidgetItem(screen_val)
+                val_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table_images.setItem(row, 3, val_item)
+                
+                # Column 4: Hardware Lag
+                lag_item = QTableWidgetItem(f"{lag_ms:.1f} ms")
+                lag_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table_images.setItem(row, 4, lag_item)
+            else:
+                self.table_images.setItem(row, 2, QTableWidgetItem("Unknown"))
+                self.table_images.setItem(row, 3, QTableWidgetItem("Unknown"))
+                self.table_images.setItem(row, 4, QTableWidgetItem("Unknown"))
+                
+            self.table_images.setRowHeight(row, 150)
             
         self.update_ui_state()
 
     def on_image_selected(self):
-        selected_items = self.list_images.selectedItems()
+        selected_items = self.table_images.selectedItems()
         if not selected_items:
             self.edit_label.clear()
             self.update_ui_state()
             return
             
-        item = selected_items[0]
-        filename = item.text()
-        parts = filename.replace('.jpg', '').split('_')
-        if len(parts) >= 1:
-            self.edit_label.setText(parts[0])
+        row = selected_items[0].row()
+        icon_item = self.table_images.item(row, 0)
+        if icon_item:
+            file_path = icon_item.data(Qt.ItemDataRole.UserRole)
+            filename = os.path.basename(file_path)
+            parts = filename.replace('.jpg', '').split('_')
+            if len(parts) >= 1:
+                self.edit_label.setText(parts[0])
             
         self.update_ui_state()
 
     def save_label(self):
-        selected_items = self.list_images.selectedItems()
+        selected_items = self.table_images.selectedItems()
         if not selected_items: return
         
-        item = selected_items[0]
+        row = selected_items[0].row()
+        icon_item = self.table_images.item(row, 0)
+        val_item = self.table_images.item(row, 3)
+        if not icon_item: return
+        
         new_val = self.edit_label.text().strip()
         if not new_val: return
         
-        old_path = item.data(Qt.ItemDataRole.UserRole)
+        old_path = icon_item.data(Qt.ItemDataRole.UserRole)
         filename = os.path.basename(old_path)
         parts = filename.split('_')
         
@@ -232,9 +289,10 @@ class DatasetCurationTab(QWidget):
             
             try:
                 os.rename(old_path, new_path)
-                item.setData(Qt.ItemDataRole.UserRole, new_path)
-                item.setText(new_filename)
-                item.setIcon(QIcon(new_path))
+                icon_item.setData(Qt.ItemDataRole.UserRole, new_path)
+                icon_item.setIcon(QIcon(new_path))
+                if val_item:
+                    val_item.setText(new_val)
                 if old_path in self.image_files:
                     idx = self.image_files.index(old_path)
                     self.image_files[idx] = new_path
@@ -242,32 +300,35 @@ class DatasetCurationTab(QWidget):
                 QMessageBox.critical(self, "Error", f"Could not rename file: {e}")
 
     def delete_image(self):
-        selected_items = self.list_images.selectedItems()
+        selected_items = self.table_images.selectedItems()
         if not selected_items: return
         
         reply = QMessageBox.question(self, "Confirm Delete", "Delete this image permanently?",
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         
         if reply == QMessageBox.StandardButton.Yes:
-            item = selected_items[0]
-            file_path = item.data(Qt.ItemDataRole.UserRole)
+            row = selected_items[0].row()
+            icon_item = self.table_images.item(row, 0)
+            if not icon_item: return
+            file_path = icon_item.data(Qt.ItemDataRole.UserRole)
             try:
                 os.remove(file_path)
                 if file_path in self.image_files:
                     self.image_files.remove(file_path)
                 
-                row = self.list_images.row(item)
-                self.list_images.takeItem(row)
+                self.table_images.removeRow(row)
                 self.update_ui_state()
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Could not delete file: {e}")
 
     def set_sync_point(self):
-        selected_items = self.list_images.selectedItems()
+        selected_items = self.table_images.selectedItems()
         if not selected_items: return
         
-        item = selected_items[0]
-        file_path = item.data(Qt.ItemDataRole.UserRole)
+        row = selected_items[0].row()
+        icon_item = self.table_images.item(row, 0)
+        if not icon_item: return
+        file_path = icon_item.data(Qt.ItemDataRole.UserRole)
         filename = os.path.basename(file_path)
         parts = filename.replace('.jpg', '').split('_')
         
@@ -304,7 +365,7 @@ class DatasetCurationTab(QWidget):
             QMessageBox.warning(self, "Error", "Filename format invalid for calibration.")
 
     def update_ui_state(self):
-        has_selection = len(self.list_images.selectedItems()) > 0
+        has_selection = len(self.table_images.selectedItems()) > 0
         self.btn_save_label.setEnabled(has_selection)
         self.btn_delete.setEnabled(has_selection)
         self.btn_set_sync.setEnabled(has_selection)
