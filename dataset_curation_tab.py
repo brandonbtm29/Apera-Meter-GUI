@@ -77,18 +77,15 @@ class DatasetCurationTab(QWidget):
         
         # Image display
         self.table_images = QTableWidget()
-        self.table_images.setColumnCount(5)
-        self.table_images.setHorizontalHeaderLabels(["Thumbnail", "Burst Entry #", "Meter ID", "Serial Value", "Hardware Lag (ms)"])
-        self.table_images.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.table_images.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table_images.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.table_images.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.table_images.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table_images.setColumnCount(6)
+        self.table_images.setHorizontalHeaderLabels(["Date/Time", "Burst Entry #", "Meter ID", "Serial Value", "Hardware Lag (ms)", "Thumbnail"])
+        self.table_images.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table_images.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.table_images.verticalHeader().setVisible(False)
         self.table_images.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table_images.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table_images.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table_images.setIconSize(QSize(150, 150))
+        self.table_images.setIconSize(QSize(250, 250))
         self.table_images.setStyleSheet("background-color: #1E1E1E; color: #FFF; font-size: 14px;")
         self.table_images.itemSelectionChanged.connect(self.on_image_selected)
         viewer_layout.addWidget(self.table_images, stretch=1)
@@ -204,11 +201,11 @@ class DatasetCurationTab(QWidget):
             filename = os.path.basename(file_path)
             parts = filename.replace('.jpg', '').split('_')
             
-            # Column 0: Thumbnail
+            # Column 5: Thumbnail (Moved to end)
             icon_item = QTableWidgetItem()
             icon_item.setIcon(QIcon(file_path))
             icon_item.setData(Qt.ItemDataRole.UserRole, file_path)
-            self.table_images.setItem(row, 0, icon_item)
+            self.table_images.setItem(row, 5, icon_item)
             
             # Column 1: Burst Entry #
             entry_item = QTableWidgetItem(str(row + 1))
@@ -222,9 +219,15 @@ class DatasetCurationTab(QWidget):
                     frame_ts = float(parts[2])
                     meter_id = parts[3]
                     lag_ms = (frame_ts - serial_ts) * 1000.0
+                    dt_str = datetime.fromtimestamp(serial_ts).strftime('%Y-%m-%d %H:%M:%S')
                 except:
-                    serial_ts, frame_ts, meter_id, lag_ms = 0.0, 0.0, "?", 0.0
+                    serial_ts, frame_ts, meter_id, lag_ms, dt_str = 0.0, 0.0, "?", 0.0, "Unknown"
                     
+                # Column 0: Date/Time
+                dt_item = QTableWidgetItem(dt_str)
+                dt_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table_images.setItem(row, 0, dt_item)
+                
                 # Column 2: Meter ID
                 m_item = QTableWidgetItem(f"Meter {meter_id}")
                 m_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -240,11 +243,12 @@ class DatasetCurationTab(QWidget):
                 lag_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table_images.setItem(row, 4, lag_item)
             else:
+                self.table_images.setItem(row, 0, QTableWidgetItem("Unknown"))
                 self.table_images.setItem(row, 2, QTableWidgetItem("Unknown"))
                 self.table_images.setItem(row, 3, QTableWidgetItem("Unknown"))
                 self.table_images.setItem(row, 4, QTableWidgetItem("Unknown"))
                 
-            self.table_images.setRowHeight(row, 150)
+            self.table_images.setRowHeight(row, 250)
             
         self.update_ui_state()
 
@@ -256,7 +260,7 @@ class DatasetCurationTab(QWidget):
             return
             
         row = selected_items[0].row()
-        icon_item = self.table_images.item(row, 0)
+        icon_item = self.table_images.item(row, 5)
         if icon_item:
             file_path = icon_item.data(Qt.ItemDataRole.UserRole)
             filename = os.path.basename(file_path)
@@ -271,7 +275,7 @@ class DatasetCurationTab(QWidget):
         if not selected_items: return
         
         row = selected_items[0].row()
-        icon_item = self.table_images.item(row, 0)
+        icon_item = self.table_images.item(row, 5)
         val_item = self.table_images.item(row, 3)
         if not icon_item: return
         
@@ -308,7 +312,7 @@ class DatasetCurationTab(QWidget):
         
         if reply == QMessageBox.StandardButton.Yes:
             row = selected_items[0].row()
-            icon_item = self.table_images.item(row, 0)
+            icon_item = self.table_images.item(row, 5)
             if not icon_item: return
             file_path = icon_item.data(Qt.ItemDataRole.UserRole)
             try:
@@ -326,7 +330,7 @@ class DatasetCurationTab(QWidget):
         if not selected_items: return
         
         row = selected_items[0].row()
-        icon_item = self.table_images.item(row, 0)
+        icon_item = self.table_images.item(row, 5)
         if not icon_item: return
         file_path = icon_item.data(Qt.ItemDataRole.UserRole)
         filename = os.path.basename(file_path)
