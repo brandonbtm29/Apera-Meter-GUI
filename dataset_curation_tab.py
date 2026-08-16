@@ -116,6 +116,11 @@ class DatasetCurationTab(QWidget):
         self.btn_save_label = QPushButton("💾 Save Label")
         self.btn_save_label.clicked.connect(self.save_label)
         
+        self.btn_master_dataset = QPushButton("🌟 Add to Master Dataset")
+        self.btn_master_dataset.setStyleSheet("background-color: #F39C12; color: white; font-weight: bold;")
+        self.btn_master_dataset.clicked.connect(self.add_to_master_dataset)
+        self.btn_master_dataset.setEnabled(False)
+        
         self.btn_set_sync = QPushButton("✅ Set as Sync Point (Calculate Lag)")
         self.btn_set_sync.setStyleSheet("background-color: #2ECC71; color: white; font-weight: bold;")
         self.btn_set_sync.clicked.connect(self.set_sync_point)
@@ -126,6 +131,7 @@ class DatasetCurationTab(QWidget):
         
         control_layout.addWidget(self.edit_label)
         control_layout.addWidget(self.btn_save_label)
+        control_layout.addWidget(self.btn_master_dataset)
         control_layout.addStretch()
         control_layout.addWidget(self.btn_set_sync)
         control_layout.addSpacing(20)
@@ -374,6 +380,58 @@ class DatasetCurationTab(QWidget):
             
         self.update_ui_state()
 
+    def add_to_master_dataset(self):
+        import uuid
+        import shutil
+        selected_items = self.table_images.selectedItems()
+        if not selected_items: return
+        
+        # Get unique selected rows
+        selected_rows = sorted(list(set([item.row() for item in selected_items])))
+        
+        master_dir = os.path.join(os.getcwd(), "Sessions", "Master_Dataset")
+        os.makedirs(master_dir, exist_ok=True)
+        
+        added_count = 0
+        for row in selected_rows:
+            screen_item = self.table_images.item(row, 2)
+            icon_item = self.table_images.item(row, 5)
+            if not screen_item or not icon_item: continue
+            
+            label = screen_item.text()
+            if label == "Unknown" or not label:
+                # Ask to save label first if it's unknown
+                new_label = self.edit_label.text().strip()
+                if new_label:
+                    label = new_label
+                    self.save_label() # This also reloads selection
+                    # Re-grab since save_label might alter rows or selection
+                    icon_item = self.table_images.item(row, 5)
+                else:
+                    QMessageBox.warning(self, "Label Required", f"Row {row+1} has no label. Please enter a label (e.g. 145.2) before adding to master dataset.")
+                    return
+                    
+            file_path = icon_item.data(Qt.ItemDataRole.UserRole)
+            if not os.path.exists(file_path): continue
+            
+            label_dir = os.path.join(master_dir, label)
+            os.makedirs(label_dir, exist_ok=True)
+            
+            new_filename = f"{label}_{uuid.uuid4().hex[:8]}.jpg"
+            dest_path = os.path.join(label_dir, new_filename)
+            
+            shutil.copy2(file_path, dest_path)
+            added_count += 1
+            
+            # Visually indicate success
+            for col in range(self.table_images.columnCount()):
+                item = self.table_images.item(row, col)
+                if item:
+                    item.setBackground(QColor("#27AE60"))
+                    
+        if added_count > 0:
+            QMessageBox.information(self, "Success", f"Added {added_count} image(s) to Master Dataset\\{label}.")
+
     def save_label(self):
         selected_items = self.table_images.selectedItems()
         if not selected_items: return
@@ -503,9 +561,10 @@ class DatasetCurationTab(QWidget):
 
     def update_ui_state(self):
         has_selection = len(self.table_images.selectedItems()) > 0
-        self.btn_save_label.setEnabled(has_selection)
         self.btn_delete.setEnabled(has_selection)
         self.btn_set_sync.setEnabled(has_selection)
+        self.btn_save_label.setEnabled(has_selection)
+        self.btn_master_dataset.setEnabled(has_selection)
         self.edit_label.setEnabled(has_selection)
 
     def delete_lag_entry(self, meter_id):

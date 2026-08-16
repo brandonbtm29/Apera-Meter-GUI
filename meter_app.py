@@ -1181,7 +1181,7 @@ class MeterController(QWidget):
                                 
                         if m_flag:
                             try:
-                                app.btn_manual_snap.setText("📷 Manual Snap (Phase 2)")
+                                app.btn_manual_snap.setText("📷 Capture OCR Training Frame")
                                 app.btn_manual_snap.setEnabled(True)
                             except: pass
                             
@@ -2067,7 +2067,7 @@ class MeterApp(QMainWindow):
         self.ocr_checkbox.setStyleSheet("font-weight: bold; font-size: 14px; padding: 5px;")
         self.ocr_checkbox.toggled.connect(self.toggle_ocr_mode)
         
-        self.dataset_checkbox = QCheckBox("Record Smart Dataset (Phase 2 Data Collection)")
+        self.dataset_checkbox = QCheckBox("Auto-Record OCR Training Dataset")
         self.dataset_checkbox.setStyleSheet("font-weight: bold; margin-left: 10px; margin-right: 10px; color: #2980b9;")
         self.dataset_checkbox.stateChanged.connect(self.toggle_dataset_mode)
         
@@ -2085,7 +2085,7 @@ class MeterApp(QMainWindow):
         self.btn_calibration_burst.clicked.connect(self.request_calibration_burst)
         
         self.manual_snap_requested = False
-        self.btn_manual_snap = QPushButton("📷 Manual Snap")
+        self.btn_manual_snap = QPushButton("📷 Capture OCR Training Frame")
         self.btn_manual_snap.setStyleSheet("background-color: #2980B9; color: white; font-weight: bold;")
         self.btn_manual_snap.clicked.connect(self.request_manual_snap)
         
@@ -2093,12 +2093,12 @@ class MeterApp(QMainWindow):
         self.chk_apply_lag.setChecked(True)
         self.chk_apply_lag.setStyleSheet("color: #34495E; font-size: 13px; margin-left: 20px;")
         
-        self.chk_burst_on_snap = QCheckBox("Capture 30-Frame Burst on Manual Snap")
+        self.chk_burst_on_snap = QCheckBox("Capture 30-Frame Burst on Snap")
         self.chk_burst_on_snap.setChecked(False)
         self.chk_burst_on_snap.setStyleSheet("color: #8E44AD; font-size: 13px; margin-left: 20px;")
         
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Mode: Hardware Calibration (Phase 1)", "Mode: Smart Dataset Collection (Phase 2)"])
+        self.mode_combo.addItems(["Mode: Hardware Calibration (Phase 1)", "Mode: OCR Training Dataset Builder"])
         self.mode_combo.setStyleSheet("font-weight: bold; font-size: 14px; padding: 5px; color: #E67E22;")
         self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
         
