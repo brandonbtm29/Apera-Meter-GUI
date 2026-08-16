@@ -1125,7 +1125,7 @@ class MeterController(QWidget):
                 is_continuous = getattr(app, 'dataset_checkbox', None) and app.dataset_checkbox.isChecked()
                 is_manual = getattr(app, 'manual_snap_requested', False)
                 
-                if self.is_recording or is_dn_packet or is_manual:
+                if self.is_recording:
                     if getattr(self, 'ocr_active', False):
                         # Throttle OCR visual logging to 10s if we wanted to
                         pass
