@@ -1187,7 +1187,7 @@ class MeterController(QWidget):
                                 
                         if m_flag:
                             try:
-                                app.btn_manual_snap.setText("📷 Capture OCR Training Frame")
+                                app.btn_manual_snap.setText("🎯 Arm Capture (Press M+ on Meter)")
                                 app.btn_manual_snap.setEnabled(True)
                             except: pass
                             
@@ -2091,15 +2091,15 @@ class MeterApp(QMainWindow):
         self.btn_calibration_burst.clicked.connect(self.request_calibration_burst)
         
         self.manual_snap_requested = False
-        self.btn_manual_snap = QPushButton("📷 Capture OCR Training Frame")
+        self.btn_manual_snap = QPushButton("🎯 Arm Capture (Press M+ on Meter)")
         self.btn_manual_snap.setStyleSheet("background-color: #2980B9; color: white; font-weight: bold;")
         self.btn_manual_snap.clicked.connect(self.request_manual_snap)
         
-        self.chk_apply_lag = QCheckBox("Apply Hardware Lag to Manual Snap")
+        self.chk_apply_lag = QCheckBox("Apply Hardware Lag to Armed Capture")
         self.chk_apply_lag.setChecked(True)
         self.chk_apply_lag.setStyleSheet("color: #34495E; font-size: 13px; margin-left: 20px;")
         
-        self.chk_burst_on_snap = QCheckBox("Capture 30-Frame Burst on Snap")
+        self.chk_burst_on_snap = QCheckBox("Capture 30-Frame Burst on Armed Capture")
         self.chk_burst_on_snap.setChecked(False)
         self.chk_burst_on_snap.setStyleSheet("color: #8E44AD; font-size: 13px; margin-left: 20px;")
         
