@@ -85,7 +85,7 @@ class DatasetCurationTab(QWidget):
         self.table_images.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table_images.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table_images.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table_images.setIconSize(QSize(250, 250))
+        self.table_images.setIconSize(QSize(100, 100))
         self.table_images.setStyleSheet("background-color: #1E1E1E; color: #FFF; font-size: 14px;")
         self.table_images.itemSelectionChanged.connect(self.on_image_selected)
         viewer_layout.addWidget(self.table_images, stretch=1)
@@ -248,7 +248,7 @@ class DatasetCurationTab(QWidget):
                 self.table_images.setItem(row, 3, QTableWidgetItem("Unknown"))
                 self.table_images.setItem(row, 4, QTableWidgetItem("Unknown"))
                 
-            self.table_images.setRowHeight(row, 250)
+            self.table_images.setRowHeight(row, 100)
             
         self.update_ui_state()
 
