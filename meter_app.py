@@ -152,8 +152,13 @@ class MeterController(QWidget):
         if idx >= 0:
             self.port_combo.setCurrentIndex(idx)
         
-        # Auto-connect removed by user request
+        if target_com != "Auto-Detect Apera Meter":
+            # Wait 2 seconds before connecting to avoid COM port locks
+            QTimer.singleShot(2000, self.auto_connect_if_valid)
 
+    def auto_connect_if_valid(self):
+        if not hasattr(self, 'serial_worker') or not self.serial_worker:
+            self.toggle_connection()
     def init_ui(self):
         main_layout = QVBoxLayout(self)
         
