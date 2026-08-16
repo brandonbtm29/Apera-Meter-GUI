@@ -1142,7 +1142,7 @@ class MeterController(QWidget):
                 # --- SMART DATASET RECORDING LOGIC ---
                 if is_manual and not getattr(app, 'dataset_session_dir', None):
                     timestamp = int(time.time())
-                    app.dataset_session_dir = os.path.join(os.getcwd(), f"dataset_session_{timestamp}")
+                    app.dataset_session_dir = os.path.join(os.getcwd(), "Sessions", f"dataset_session_{timestamp}")
                     frames_dir = os.path.join(app.dataset_session_dir, "frames")
                     os.makedirs(frames_dir, exist_ok=True)
                     app.dataset_csv_path = os.path.join(app.dataset_session_dir, "readings.csv")
@@ -2007,7 +2007,7 @@ class OCRFeedTab(QWidget):
                 
                 sess_dir = getattr(self.app, 'calibration_session_dir', None)
                 if not sess_dir:
-                    sess_dir = os.path.join(os.getcwd(), f"calibration_session_{int(serial_ts)}")
+                    sess_dir = os.path.join(os.getcwd(), "Sessions", f"calibration_session_{int(serial_ts)}")
                     self.app.calibration_session_dir = sess_dir
                     os.makedirs(os.path.join(sess_dir, "extracted_crops"), exist_ok=True)
                 
@@ -2240,7 +2240,7 @@ class MeterApp(QMainWindow):
         if state:
             # Create session folder
             timestamp = int(time.time())
-            self.dataset_session_dir = os.path.join(os.getcwd(), f"dataset_session_{timestamp}")
+            self.dataset_session_dir = os.path.join(os.getcwd(), "Sessions", f"dataset_session_{timestamp}")
             frames_dir = os.path.join(self.dataset_session_dir, "frames")
             os.makedirs(frames_dir, exist_ok=True)
             self.dataset_csv_path = os.path.join(self.dataset_session_dir, "readings.csv")
@@ -2263,7 +2263,7 @@ class MeterApp(QMainWindow):
         if not getattr(self, 'dataset_session_dir', None):
             # Create session folder if it doesn't exist
             timestamp = int(time.time())
-            self.dataset_session_dir = os.path.join(os.getcwd(), f"dataset_session_{timestamp}")
+            self.dataset_session_dir = os.path.join(os.getcwd(), "Sessions", f"dataset_session_{timestamp}")
             frames_dir = os.path.join(self.dataset_session_dir, "frames")
             os.makedirs(frames_dir, exist_ok=True)
             self.dataset_csv_path = os.path.join(self.dataset_session_dir, "readings.csv")

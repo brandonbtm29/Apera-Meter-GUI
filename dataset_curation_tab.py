@@ -186,26 +186,31 @@ class DatasetCurationTab(QWidget):
     def populate_sessions(self):
         self.session_list.clear()
         
-        base_dir = os.getcwd()
+        base_dir = os.path.join(os.getcwd(), "Sessions")
+        if not os.path.exists(base_dir):
+            os.makedirs(base_dir, exist_ok=True)
+            
         dirs = []
         for d in os.listdir(base_dir):
             full_path = os.path.join(base_dir, d)
             if os.path.isdir(full_path):
-                if d.startswith("calibration_session_") or d.startswith("dataset_"):
-                    crop_dir = os.path.join(full_path, "extracted_crops")
-                    if os.path.isdir(crop_dir):
-                        dirs.append((os.path.getmtime(full_path), crop_dir))
+                crop_dir = os.path.join(full_path, "extracted_crops")
+                # If there are extracted crops, it's valid
+                if os.path.exists(crop_dir) and len(glob.glob(os.path.join(crop_dir, "*.jpg"))) > 0:
+                    dirs.append((full_path, os.path.getmtime(full_path)))
+                    
+        # Sort descending by modified time
+        dirs.sort(key=lambda x: x[1], reverse=True)
         
-        dirs.sort(key=lambda x: x[0], reverse=True)
-        
-        for mtime, path in dirs:
+        for path, mtime in dirs:
             dt = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
-            num_items = len(glob.glob(os.path.join(path, "*.jpg")))
-            parent_name = os.path.basename(os.path.dirname(path))
+            crop_dir = os.path.join(path, "extracted_crops")
+            num_items = len(glob.glob(os.path.join(crop_dir, "*.jpg")))
+            parent_name = os.path.basename(path)
             display_name = f"📁 {parent_name} \n   └ {num_items} images | Modified: {dt}"
             
             item = QListWidgetItem(display_name)
-            item.setData(Qt.ItemDataRole.UserRole, path)
+            item.setData(Qt.ItemDataRole.UserRole, crop_dir)
             self.session_list.addItem(item)
             
     def on_session_double_clicked(self, item):
