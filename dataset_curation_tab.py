@@ -248,24 +248,37 @@ class DatasetCurationTab(QWidget):
         else:
             super().keyPressEvent(event)
             
+    def format_source(self, src):
+        try:
+            parts = src.split('_')
+            if len(parts) >= 3 and parts[-1].isdigit():
+                ts = int(parts[-1])
+                dt_str = datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
+                return f"Session: {dt_str}"
+        except Exception:
+            pass
+        return src
+
     def refresh_lag_labels(self):
         if not self.app: return
         
-        m1_lag = self.app.meter1.config.get("hardware_lag_ms", 0.0)
+        m1_lag = self.app.meter1.config.get("hardware_lag_ms_1", 0.0)
         self.lbl_m1_lag.setText(f"M1 Lag: {m1_lag:.1f} ms")
         self.list_m1_lag.clear()
-        for item in self.app.meter1.config.get("lag_measurements", []):
+        for item in self.app.meter1.config.get("lag_measurements_1", []):
             if isinstance(item, dict):
-                self.list_m1_lag.addItem(f"{item.get('lag', 0.0):.1f} ms ({item.get('source', 'Unknown')})")
+                src_fmt = self.format_source(item.get('source', 'Unknown'))
+                self.list_m1_lag.addItem(f"{item.get('lag', 0.0):.1f} ms ({src_fmt})")
             else:
                 self.list_m1_lag.addItem(f"{item:.1f} ms (Unknown)")
             
-        m2_lag = self.app.meter2.config.get("hardware_lag_ms", 0.0)
+        m2_lag = self.app.meter2.config.get("hardware_lag_ms_2", 0.0)
         self.lbl_m2_lag.setText(f"M2 Lag: {m2_lag:.1f} ms")
         self.list_m2_lag.clear()
-        for item in self.app.meter2.config.get("lag_measurements", []):
+        for item in self.app.meter2.config.get("lag_measurements_2", []):
             if isinstance(item, dict):
-                self.list_m2_lag.addItem(f"{item.get('lag', 0.0):.1f} ms ({item.get('source', 'Unknown')})")
+                src_fmt = self.format_source(item.get('source', 'Unknown'))
+                self.list_m2_lag.addItem(f"{item.get('lag', 0.0):.1f} ms ({src_fmt})")
             else:
                 self.list_m2_lag.addItem(f"{item:.1f} ms (Unknown)")
         
@@ -476,7 +489,7 @@ class DatasetCurationTab(QWidget):
         if reply == QMessageBox.StandardButton.Yes:
             if self.app:
                 meter = self.app.meter1 if str(base_meter_id) == "1" else self.app.meter2
-                measurements = meter.config.setdefault("lag_measurements", [])
+                measurements = meter.config.setdefault(f"lag_measurements_{base_meter_id}", [])
                 
                 # Try to extract the folder name as the source
                 source_name = "Unknown"
@@ -501,7 +514,7 @@ class DatasetCurationTab(QWidget):
         row = lst.currentRow()
         if row < 0: return
         
-        measurements = meter.config.get("lag_measurements", [])
+        measurements = meter.config.get(f"lag_measurements_{meter_id}", [])
         if 0 <= row < len(measurements):
             measurements.pop(row)
             meter.save_config()
@@ -509,7 +522,7 @@ class DatasetCurationTab(QWidget):
 
     def average_and_apply(self, meter_id):
         meter = self.app.meter1 if meter_id == 1 else self.app.meter2
-        measurements = meter.config.get("lag_measurements", [])
+        measurements = meter.config.get(f"lag_measurements_{meter_id}", [])
         if not measurements:
             QMessageBox.warning(self, "Error", "No measurements to average.")
             return
@@ -528,7 +541,7 @@ class DatasetCurationTab(QWidget):
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         
         if reply == QMessageBox.StandardButton.Yes:
-            meter.config["hardware_lag_ms"] = avg_lag
+            meter.config[f"hardware_lag_ms_{meter_id}"] = avg_lag
             meter.spin_lag.setValue(avg_lag)
             meter.save_config()
             self.refresh_lag_labels()

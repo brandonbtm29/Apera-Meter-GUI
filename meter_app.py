@@ -238,7 +238,7 @@ class MeterController(QWidget):
         self.spin_lag = QDoubleSpinBox()
         self.spin_lag.setRange(-2000.0, 2000.0)
         self.spin_lag.setDecimals(1)
-        self.spin_lag.setValue(float(self.config.get("hardware_lag_ms", 300.0)))
+        self.spin_lag.setValue(float(self.config.get(f"hardware_lag_ms_{self.meter_id}", 300.0)))
         self.spin_lag.valueChanged.connect(self._save_hardware_lag)
         lag_layout.addWidget(self.spin_lag)
         l_rec.addLayout(lag_layout)
@@ -677,7 +677,7 @@ class MeterController(QWidget):
         self.canvas.draw_idle()
 
     def _save_hardware_lag(self, val):
-        self.config["hardware_lag_ms"] = float(val)
+        self.config[f"hardware_lag_ms_{self.meter_id}"] = float(val)
         self.save_config()
 
     def _auto_chk_changed(self):
@@ -1162,7 +1162,7 @@ class MeterController(QWidget):
                         app.manual_snap_requested = False
                         
                     # Retrieve dynamic hardware lag
-                    hw_lag = self.config.get("hardware_lag_ms", 300)
+                    hw_lag = self.config.get(f"hardware_lag_ms_{self.meter_id}", 300)
                     if getattr(app, 'chk_apply_lag', None) and not app.chk_apply_lag.isChecked():
                         hw_lag = 0.0
                         
