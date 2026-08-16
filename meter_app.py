@@ -1136,6 +1136,11 @@ class MeterController(QWidget):
                         
                     # Retrieve dynamic hardware lag
                     hw_lag = self.config.get("hardware_lag_ms", 300)
+                    if getattr(app, 'chk_apply_lag', None) and not app.chk_apply_lag.isChecked():
+                        hw_lag = 0.0
+                        
+                    if is_manual and getattr(app, 'chk_burst_on_snap', None) and app.chk_burst_on_snap.isChecked():
+                        app.calibration_burst_requested = True
                     
                     def capture_delayed_frame(cap_ts=ts, c_ms=cond_ms, r_cond=str(w4), m_id=self.meter_id, m_flag=is_manual):
                         import cv2
@@ -1722,6 +1727,8 @@ class OCRFeedTab(QWidget):
         l_global.addWidget(self.app.btn_calibration_burst)
         l_global.addWidget(self.app.dataset_checkbox)
         l_global.addWidget(self.app.btn_manual_snap)
+        l_global.addWidget(self.app.chk_apply_lag)
+        l_global.addWidget(self.app.chk_burst_on_snap)
         
         # Camera Focus & Index
         self.focus_slider = QSlider(Qt.Orientation.Horizontal)
@@ -2024,6 +2031,14 @@ class MeterApp(QMainWindow):
         self.btn_manual_snap = QPushButton("📷 Manual Snap")
         self.btn_manual_snap.setStyleSheet("background-color: #2980B9; color: white; font-weight: bold;")
         self.btn_manual_snap.clicked.connect(self.request_manual_snap)
+        
+        self.chk_apply_lag = QCheckBox("Apply Hardware Lag to Manual Snap")
+        self.chk_apply_lag.setChecked(True)
+        self.chk_apply_lag.setStyleSheet("color: #34495E; font-size: 13px; margin-left: 20px;")
+        
+        self.chk_burst_on_snap = QCheckBox("Capture 30-Frame Burst on Manual Snap")
+        self.chk_burst_on_snap.setChecked(False)
+        self.chk_burst_on_snap.setStyleSheet("color: #8E44AD; font-size: 13px; margin-left: 20px;")
         
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["Mode: Hardware Calibration (Phase 1)", "Mode: Smart Dataset Collection (Phase 2)"])
