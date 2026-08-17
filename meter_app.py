@@ -1175,9 +1175,14 @@ class MeterController(QWidget):
                     if is_manual and getattr(app, 'chk_burst_on_snap', None) and app.chk_burst_on_snap.isChecked():
                         app.calibration_burst_requested = True
                     
-                    def capture_delayed_frame(cap_ts=ts, c_ms=cond_ms, r_cond=str(w4), m_id=self.meter_id, m_flag=is_manual):
+                    def capture_delayed_frame(cap_ts=ts, c_ms=cond_ms, r_cond=str(w4), m_id=self.meter_id, m_flag=is_manual, h_lag=hw_lag):
                         import cv2
                         import os
+                        import time
+                        from PyQt6.QtCore import QMetaObject, Qt, Q_ARG
+                        
+                        time.sleep(h_lag / 1000.0)
+                        
                         frame = app.ocr_feed_tab.last_frame
                         if frame is not None:
                             frame_path = os.path.join(app.dataset_session_dir, "frames", f"frame_{cap_ts}.jpg")
@@ -1187,11 +1192,12 @@ class MeterController(QWidget):
                                 
                         if m_flag:
                             try:
-                                app.btn_manual_snap.setText("🎯 Arm Capture (Press M+ on Meter)")
-                                app.btn_manual_snap.setEnabled(True)
+                                QMetaObject.invokeMethod(app.btn_manual_snap, "setText", Qt.ConnectionType.QueuedConnection, Q_ARG(str, "🎯 Arm Capture (Press M+ on Meter)"))
+                                QMetaObject.invokeMethod(app.btn_manual_snap, "setEnabled", Qt.ConnectionType.QueuedConnection, Q_ARG(bool, True))
                             except: pass
                             
-                    QTimer.singleShot(int(hw_lag), capture_delayed_frame)
+                    import threading
+                    threading.Thread(target=capture_delayed_frame, daemon=True).start()
                     
                 # --- PHASE 1: CALIBRATION BURST LOGIC ---
                 if getattr(app, 'calibration_burst_requested', False):
