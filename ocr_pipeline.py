@@ -81,9 +81,7 @@ class MeterOCR:
     def set_rois(self, r1, r2, r3, r4):
         self.rois = {
             "m1_cond": r1,
-            "m1_temp": r2,
-            "m2_cond": r3,
-            "m2_temp": r4
+            "m2_cond": r3
         }
 
     def add_callback(self, cb):
@@ -250,8 +248,8 @@ class MeterOCR:
             self.last_parsed_vals = {}
         self.last_parsed_vals.update(parsed_vals)
             
-        readings[0] = (parsed_vals.get("m1_cond", 0.0), parsed_vals.get("m1_temp", 0.0))
-        readings[1] = (parsed_vals.get("m2_cond", 0.0), parsed_vals.get("m2_temp", 0.0))
+        readings[0] = (parsed_vals.get("m1_cond", 0.0), 0.0)
+        readings[1] = (parsed_vals.get("m2_cond", 0.0), 0.0)
         
         # Emit to callbacks
         for cb in self.callbacks:

@@ -96,7 +96,7 @@ class DatasetCurationTab(QWidget):
         # Image display
         self.table_images = QTableWidget()
         self.table_images.setColumnCount(6)
-        self.table_images.setHorizontalHeaderLabels(["Date/Time", "Burst Entry #", "Meter ID", "Serial Value", "Hardware Lag (ms)", "Thumbnail"])
+        self.table_images.setHorizontalHeaderLabels(["Date/Time", "Burst Entry #", "Meter ID", "Hardware Lag (ms)", "Serial Value", "Thumbnail"])
         self.table_images.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.table_images.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.table_images.verticalHeader().setVisible(False)
@@ -343,15 +343,15 @@ class DatasetCurationTab(QWidget):
                 m_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table_images.setItem(row, 2, m_item)
                 
-                # Column 3: Serial Value
-                val_item = QTableWidgetItem(screen_val)
-                val_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.table_images.setItem(row, 3, val_item)
-                
-                # Column 4: Hardware Lag
+                # Column 3: Hardware Lag
                 lag_item = QTableWidgetItem(f"{lag_ms:.1f} ms")
                 lag_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.table_images.setItem(row, 4, lag_item)
+                self.table_images.setItem(row, 3, lag_item)
+                
+                # Column 4: Serial Value
+                val_item = QTableWidgetItem(screen_val)
+                val_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table_images.setItem(row, 4, val_item)
             else:
                 self.table_images.setItem(row, 0, QTableWidgetItem("Unknown"))
                 self.table_images.setItem(row, 2, QTableWidgetItem("Unknown"))
@@ -380,6 +380,11 @@ class DatasetCurationTab(QWidget):
             
         self.update_ui_state()
 
+    def showEvent(self, event):
+        self.populate_sessions()
+        self.refresh_file_list()
+        super().showEvent(event)
+
     def add_to_master_dataset(self):
         import uuid
         import shutil
@@ -394,7 +399,7 @@ class DatasetCurationTab(QWidget):
         
         added_count = 0
         for row in selected_rows:
-            screen_item = self.table_images.item(row, 2)
+            screen_item = self.table_images.item(row, 4)
             icon_item = self.table_images.item(row, 5)
             if not screen_item or not icon_item: continue
             
@@ -438,7 +443,7 @@ class DatasetCurationTab(QWidget):
         
         row = selected_items[0].row()
         icon_item = self.table_images.item(row, 5)
-        val_item = self.table_images.item(row, 3)
+        val_item = self.table_images.item(row, 4)
         if not icon_item: return
         
         new_val = self.edit_label.text().strip()
