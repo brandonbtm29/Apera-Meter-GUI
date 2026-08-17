@@ -1192,6 +1192,17 @@ class MeterController(QWidget):
                             with open(app.dataset_csv_path, "a", encoding="utf-8") as f:
                                 f.write(f"{cap_ts},{m_id},{c_ms},mS,{r_cond}\n")
                                 
+                            roi_imgs, _ = app.ocr_pipeline.extract_crops(frame)
+                            roi_name = f"m{m_id}_cond"
+                            roi_img = roi_imgs.get(roi_name)
+                            if roi_img is not None and roi_img.size > 0:
+                                crop_dir = os.path.join(app.dataset_session_dir, "extracted_crops")
+                                os.makedirs(crop_dir, exist_ok=True)
+                                cnn_img = cv2.resize(roi_img, (128, 128))
+                                filename = f"{c_ms}_{cap_ts:.3f}_{cap_ts:.3f}_{m_id}.jpg"
+                                out_path = os.path.join(crop_dir, filename)
+                                cv2.imwrite(out_path, cnn_img)
+                                
                         if m_flag:
                             try:
                                 self.signals.reset_manual_snap.emit()
@@ -1228,6 +1239,11 @@ class MeterController(QWidget):
             payload = packet[3:11]
             hex_str = "-".join([f"{b:02X}" for b in payload])
             self.signals.update_device_info.emit("Model", hex_str)
+
+    def _reset_manual_snap_ui(self):
+        if hasattr(self.app_controller, 'btn_manual_snap'):
+            self.app_controller.btn_manual_snap.setText("🎯 Arm Capture (Press M+ on Meter)")
+            self.app_controller.btn_manual_snap.setEnabled(True)
 
     def log_point_ui(self, dt, row_data):
         if not getattr(self, 'session_start_time', None):
