@@ -851,8 +851,11 @@ class MeterController(QWidget):
                                 if not getattr(self, 'session_start_time', None):
                                     self.session_start_time = dt
                                 self.plot_dates.append(dt)
-                                self.plot_conds.append(float(row[3]) if row[3] else 0.0)
-                                self.plot_temps.append(float(row[5]) if row[5] else 0.0)
+                                try: self.plot_conds.append(float(row[3]))
+                                except ValueError: self.plot_conds.append(0.0)
+                                
+                                try: self.plot_temps.append(float(row[5]))
+                                except ValueError: self.plot_temps.append(0.0)
                             except: pass
                             
                     self.table.setSortingEnabled(True)
@@ -1093,7 +1096,15 @@ class MeterController(QWidget):
                     val_changed = False
                     try: 
                         new_ms = float(cond_ms)
+                        if getattr(self, 'first_serial_time', None) is None:
+                            self.first_serial_time = time.time()
+                            
                         if getattr(self, 'last_serial_cond_ms', None) != new_ms:
+                            self.last_serial_cond_ms = new_ms
+                            if hasattr(self.app_controller, 'ocr_pipeline'):
+                                if not hasattr(self.app_controller.ocr_pipeline, 'latest_serial_ms'):
+                                    self.app_controller.ocr_pipeline.latest_serial_ms = {}
+                                self.app_controller.ocr_pipeline.latest_serial_ms[f"m{self.meter_id}_cond"] = new_ms
                             val_changed = True
                         self.last_serial_cond_ms = new_ms
                     except: pass
@@ -1259,8 +1270,11 @@ class MeterController(QWidget):
             full_row = row_data
             
         self.plot_dates.append(dt)
-        self.plot_conds.append(float(full_row[3]) if full_row[3] else 0.0)
-        self.plot_temps.append(float(full_row[5]) if full_row[5] else 0.0)
+        try: self.plot_conds.append(float(full_row[3]))
+        except ValueError: self.plot_conds.append(0.0)
+        
+        try: self.plot_temps.append(float(full_row[5]))
+        except ValueError: self.plot_temps.append(0.0)
         
         self.table.setSortingEnabled(False)
         row_idx = self.table.rowCount()
@@ -1790,23 +1804,39 @@ class OCRFeedTab(QWidget):
         scroll_area.setFixedWidth(350)
         splitter.addWidget(scroll_area)
         
-        # Global OCR Controls (Migrated from Toolbar)
-        gb_global = QGroupBox("Global Controls")
-        l_global = QVBoxLayout(gb_global)
-        l_global.addWidget(self.app.ocr_checkbox)
-        l_global.addWidget(self.app.mode_combo)
+        def make_collapsible(title, parent_layout, default_collapsed=False):
+            btn_toggle = QPushButton(f"▼ {title}")
+            btn_toggle.setCheckable(True)
+            btn_toggle.setStyleSheet("text-align: left; font-weight: bold; padding: 5px; background-color: #34495e; color: white;")
+            content_widget = QWidget()
+            l = QVBoxLayout(content_widget)
+            l.setContentsMargins(0, 0, 0, 0)
+            parent_layout.addWidget(btn_toggle)
+            parent_layout.addWidget(content_widget)
+            btn_toggle.toggled.connect(lambda checked, w=content_widget, b=btn_toggle, t=title: (w.setVisible(not checked), b.setText(f"▶ {t}" if checked else f"▼ {t}")))
+            btn_toggle.setChecked(default_collapsed)
+            if not default_collapsed:
+                content_widget.setVisible(True)
+                btn_toggle.setText(f"▼ {title}")
+            return l
+
+        # 1. Camera Settings
+        l_camera = make_collapsible("Camera Settings", left_layout)
+        l_camera.addWidget(self.app.ocr_checkbox)
         
-        burst_layout = QHBoxLayout()
-        burst_layout.addWidget(self.app.btn_calibration_burst)
-        burst_layout.addWidget(self.app.spin_burst_count)
-        l_global.addLayout(burst_layout)
+        l_camera.addWidget(QLabel("Camera Index (0=default, 1=external):"))
+        self.camera_index_spin = QSpinBox()
+        self.camera_index_spin.setRange(0, 10)
         
-        l_global.addWidget(self.app.dataset_checkbox)
-        l_global.addWidget(self.app.btn_manual_snap)
-        l_global.addWidget(self.app.chk_apply_lag)
-        l_global.addWidget(self.app.chk_burst_on_snap)
+        default_cam = self.app.shared_config.get("camera_index", 0) if self.app else 0
+        if self.app and hasattr(self.app, 'ocr_pipeline'):
+            self.app.ocr_pipeline.camera_index = default_cam
+        self.camera_index_spin.setValue(default_cam)
         
-        # Camera Focus & Index
+        self.camera_index_spin.valueChanged.connect(self.on_camera_index_changed)
+        l_camera.addWidget(self.camera_index_spin)
+        
+        l_camera.addWidget(QLabel("Camera Focus:"))
         self.focus_slider = QSlider(Qt.Orientation.Horizontal)
         self.focus_slider.setRange(-1, 255)
         self.focus_slider.setValue(-1)
@@ -1814,28 +1844,51 @@ class OCRFeedTab(QWidget):
         self.focus_slider.setTickInterval(10)
         self.focus_label = QLabel("Focus: Auto")
         self.focus_slider.valueChanged.connect(self.on_focus_changed)
+        l_camera.addWidget(self.focus_slider)
+        l_camera.addWidget(self.focus_label)
         
-        self.camera_index_spin = QSpinBox()
-        self.camera_index_spin.setRange(0, 10)
-        self.camera_index_spin.setValue(self.app.ocr_pipeline.camera_index if self.app and hasattr(self.app, 'ocr_pipeline') else 0)
-        self.camera_index_spin.valueChanged.connect(self.on_camera_index_changed)
+        # 2. Data Insertion
+        l_data = make_collapsible("Data Logging & Graphing", left_layout)
+        l_data.addWidget(self.app.mode_combo)
+        l_data.addWidget(self.app.ocr_autolog_checkbox)
+        l_data.addWidget(self.app.chk_apply_lag)
         
+        l_data.addWidget(QLabel("OCR Sampling Rate (s) [0.25 - 60.0]:"))
         self.ocr_interval_spin = QDoubleSpinBox()
         self.ocr_interval_spin.setRange(0.25, 60.0)
         self.ocr_interval_spin.setDecimals(2)
         self.ocr_interval_spin.setSingleStep(0.1)
-        self.ocr_interval_spin.setValue(self.app.ocr_pipeline.ocr_interval if self.app and hasattr(self.app, 'ocr_pipeline') else 1.0)
+        
+        default_interval = self.app.shared_config.get("ocr_interval", 1.0) if self.app else 1.0
+        if self.app and hasattr(self.app, 'ocr_pipeline'):
+            self.app.ocr_pipeline.ocr_interval = default_interval
+        self.ocr_interval_spin.setValue(default_interval)
+        
         self.ocr_interval_spin.valueChanged.connect(self.on_ocr_interval_changed)
+        l_data.addWidget(self.ocr_interval_spin)
         
-        l_global.addWidget(QLabel("Camera Focus:"))
-        l_global.addWidget(self.focus_slider)
-        l_global.addWidget(self.focus_label)
-        l_global.addWidget(QLabel("Camera Index (0=default web, 1=external):"))
-        l_global.addWidget(self.camera_index_spin)
-        l_global.addWidget(QLabel("OCR Sampling Rate (s) [0.25 - 60.0]:"))
-        l_global.addWidget(self.ocr_interval_spin)
+        # 3. Training & Calibration
+        l_train = make_collapsible("Training & Calibration", left_layout, default_collapsed=True)
+        l_train.addWidget(self.app.dataset_checkbox)
+        l_train.addWidget(self.app.btn_manual_snap)
+        l_train.addWidget(self.app.chk_burst_on_snap)
         
-        left_layout.addWidget(gb_global)
+        burst_layout = QHBoxLayout()
+        burst_layout.addWidget(self.app.btn_calibration_burst)
+        burst_layout.addWidget(self.app.spin_burst_count)
+        l_train.addLayout(burst_layout)
+        
+        # 4. OCR Filters & Sanity Checks
+        l_filters = make_collapsible("OCR Filters & Sanity Checks", left_layout)
+        l_filters.addWidget(self.app.ocr_dual_mode_chk)
+        
+        dev_layout = QHBoxLayout()
+        dev_layout.addWidget(QLabel("Max Allowed Deviation (%):"))
+        dev_layout.addWidget(self.app.ocr_max_dev_spin)
+        l_filters.addLayout(dev_layout)
+        
+        l_filters.addWidget(self.app.ocr_discard_chk)
+        l_filters.addWidget(self.app.ocr_enforce_1999_chk)
         
         # Draw control
         self.btn_draw = QPushButton("🖌️ Draw ROI")
@@ -1851,8 +1904,13 @@ class OCRFeedTab(QWidget):
         self.roi_spinboxes = {}
         # ROI Groups
         for name, title in [("m1_cond", "M1 Cond"), ("m2_cond", "M2 Cond")]:
-            gb = QGroupBox(title)
-            l = QVBoxLayout(gb)
+            btn_toggle = QPushButton(f"▼ {title}")
+            btn_toggle.setCheckable(True)
+            btn_toggle.setStyleSheet("text-align: left; font-weight: bold; padding: 5px; background-color: #34495e; color: white;")
+            
+            content_widget = QWidget()
+            l = QVBoxLayout(content_widget)
+            l.setContentsMargins(0, 0, 0, 0)
             
             btn_set = QPushButton(f"✅ Assign {title} to Drawn Box")
             btn_set.clicked.connect(lambda checked, n=name: self.set_specific_roi(n))
@@ -1880,7 +1938,11 @@ class OCRFeedTab(QWidget):
             btn_clear_single.clicked.connect(lambda checked, n=name: self.clear_single_roi(n))
             l.addWidget(btn_clear_single)
             
-            left_layout.addWidget(gb)
+            left_layout.addWidget(btn_toggle)
+            left_layout.addWidget(content_widget)
+            
+            btn_toggle.toggled.connect(lambda checked, w=content_widget, b=btn_toggle, t=title: (w.setVisible(not checked), b.setText(f"▶ {t}" if checked else f"▼ {t}")))
+            btn_toggle.setChecked(True) # Start collapsed
         
         left_layout.addStretch()
         
@@ -1919,6 +1981,9 @@ class OCRFeedTab(QWidget):
     def on_camera_index_changed(self, val):
         if self.app and hasattr(self.app, 'ocr_pipeline'):
             self.app.ocr_pipeline.camera_index = val
+            if hasattr(self.app, '_save_ocr_config'):
+                self.app.shared_config["camera_index"] = val
+                self.app._save_ocr_config()
             if self.app.ocr_pipeline.is_running:
                 self.app.ocr_pipeline.stop()
                 import time
@@ -1928,6 +1993,9 @@ class OCRFeedTab(QWidget):
     def on_ocr_interval_changed(self, val):
         if self.app and hasattr(self.app, 'ocr_pipeline'):
             self.app.ocr_pipeline.ocr_interval = val
+            if hasattr(self.app, '_save_ocr_config'):
+                self.app.shared_config["ocr_interval"] = val
+                self.app._save_ocr_config()
 
     def on_roi_selected(self, rect):
         self.current_drawn_rect = rect
@@ -2020,14 +2088,20 @@ class OCRFeedTab(QWidget):
                 for spin in spins.values(): spin.setValue(0.0)
             for spin in spins.values(): spin.blockSignals(False)
 
-    def receive_frame_threadsafe(self, frame):
+    def receive_frame_threadsafe(self, frame, roi_imgs=None):
         import time
         import os
         import cv2
         self.last_frame = frame.copy()
         
         frame_ts = time.time()
-        self.frame_buffer.append((frame_ts, self.last_frame))
+        
+        if getattr(self.app, 'chk_burst_on_snap', None) and self.app.chk_burst_on_snap.isChecked():
+            if roi_imgs is not None:
+                safe_crops = {k: v.copy() for k, v in roi_imgs.items() if v is not None}
+                self.frame_buffer.append((frame_ts, safe_crops))
+        else:
+            self.frame_buffer.clear()
         
         # Phase 1: Intercept Calibration Burst
         if getattr(self.app, 'calibration_burst_count', 0) > 0:
@@ -2044,10 +2118,9 @@ class OCRFeedTab(QWidget):
                     self.app.calibration_session_dir = sess_dir
                     os.makedirs(os.path.join(sess_dir, "extracted_crops"), exist_ok=True)
                 
-                for f_ts, f_img in list(self.frame_buffer):
-                    roi_imgs, _ = self.app.ocr_pipeline.extract_crops(f_img)
+                for f_ts, buffered_crops in list(self.frame_buffer):
                     roi_name = f"m{meter_id}_cond"
-                    roi_img = roi_imgs.get(roi_name)
+                    roi_img = buffered_crops.get(roi_name)
                     
                     if roi_img is not None and roi_img.size > 0:
                         cnn_img = cv2.resize(roi_img, (128, 128))
@@ -2057,8 +2130,9 @@ class OCRFeedTab(QWidget):
                         cv2.imwrite(out_path, cnn_img)
                         
                 try:
-                    self.app.btn_calibration_burst.setText("🎯 Capture Calibration Burst (Phase 1)")
-                    self.app.btn_calibration_burst.setEnabled(True)
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(0, lambda: self.app.btn_calibration_burst.setText("🎯 Capture Calibration Burst (Phase 1)"))
+                    QTimer.singleShot(0, lambda: self.app.btn_calibration_burst.setEnabled(True))
                 except: pass
                 
                 self.app.calibration_session_dir = None
@@ -2067,32 +2141,47 @@ class OCRFeedTab(QWidget):
                 if bursts_rem > 0:
                     self.app.calibration_burst_requested = True
                     try:
-                        self.app.btn_calibration_burst.setText(f"⏳ Waiting for Serial ({bursts_rem} left)...")
-                        self.app.btn_calibration_burst.setEnabled(False)
+                        from PyQt6.QtCore import QTimer
+                        QTimer.singleShot(0, lambda: self.app.btn_calibration_burst.setText(f"⏳ Waiting for Serial ({bursts_rem} left)..."))
+                        QTimer.singleShot(0, lambda: self.app.btn_calibration_burst.setEnabled(False))
                     except: pass
-        self.image_ready.emit(frame)
-
+        try:
+            h, w = frame.shape[:2]
+            if w > 1920:
+                small_frame = cv2.resize(frame, (1280, 720))
+            else:
+                small_frame = frame
+            self.image_ready.emit(small_frame)
+        except Exception:
+            self.image_ready.emit(frame)
     def set_image(self, frame):
         rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb_image.shape
         bytes_per_line = ch * w
-        q_img = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        q_img = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
         
         pixmap = QPixmap.fromImage(q_img)
         scaled_pixmap = pixmap.scaled(self.image_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         self.image_label.setPixmap(scaled_pixmap)
 
 class MeterApp(QMainWindow):
-
+    ocr_readings_signal = pyqtSignal(list)
+    ocr_frame_signal = pyqtSignal(object, object)
 
     def __init__(self):
         super().__init__()
+        import os, json
         self.setWindowTitle("Apera Dual-Meter Control Center (PyQt6)")
         self.resize(1400, 800)
-        
-
-        
         self.tabs = QTabWidget()
+        
+        self.config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+        self.shared_config = {}
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, "r") as f:
+                    self.shared_config = json.load(f)
+            except: pass
 
         # Instantiate buttons without placing them in the global toolbar
         self.ocr_checkbox = QPushButton("🎥 Turn Camera On")
@@ -2104,9 +2193,33 @@ class MeterApp(QMainWindow):
         self.dataset_checkbox.setStyleSheet("font-weight: bold; margin-left: 10px; margin-right: 10px; color: #2980b9;")
         self.dataset_checkbox.stateChanged.connect(self.toggle_dataset_mode)
         
+        self.ocr_autolog_checkbox = QCheckBox("Auto-Log OCR to Graphs/Tables")
+        self.ocr_autolog_checkbox.setChecked(self.shared_config.get("ocr_autolog", True))
+        self.ocr_autolog_checkbox.setStyleSheet("font-weight: bold; margin-left: 10px; margin-right: 10px; color: #27ae60;")
+        self.ocr_autolog_checkbox.stateChanged.connect(self._save_ocr_config)
+        
+        self.ocr_dual_mode_chk = QCheckBox("Require CNN & CV Consensus (Dual-Mode)")
+        self.ocr_dual_mode_chk.setChecked(self.shared_config.get("ocr_dual_mode", True))
+        self.ocr_dual_mode_chk.setToolTip("If enabled, requires both CNN and Classic algorithms to agree.")
+        self.ocr_dual_mode_chk.stateChanged.connect(self._save_ocr_config)
+        
+        self.ocr_discard_chk = QCheckBox("Discard Bad Reads (Return 0.0)")
+        self.ocr_discard_chk.setChecked(self.shared_config.get("ocr_discard", False))
+        self.ocr_discard_chk.stateChanged.connect(self._save_ocr_config)
+        
+        self.ocr_enforce_1999_chk = QCheckBox("Enforce 1999 Max (Clamp Overflow)")
+        self.ocr_enforce_1999_chk.setChecked(self.shared_config.get("ocr_enforce_1999", True))
+        self.ocr_enforce_1999_chk.stateChanged.connect(self._save_ocr_config)
+        
+        self.ocr_max_dev_spin = QSpinBox()
+        self.ocr_max_dev_spin.setRange(1, 1000)
+        self.ocr_max_dev_spin.setValue(self.shared_config.get("ocr_max_dev", 50))
+        self.ocr_max_dev_spin.valueChanged.connect(self._save_ocr_config)
+        
         self.spin_burst_count = QSpinBox()
         self.spin_burst_count.setRange(1, 100)
-        self.spin_burst_count.setValue(1)
+        self.spin_burst_count.setValue(self.shared_config.get("ocr_burst_count", 1))
+        self.spin_burst_count.valueChanged.connect(self._save_ocr_config)
         self.spin_burst_count.setPrefix("Bursts: ")
         self.spin_burst_count.setStyleSheet("font-weight: bold; font-size: 13px; margin-left: 20px;")
         
@@ -2137,10 +2250,25 @@ class MeterApp(QMainWindow):
         
         from ocr_pipeline import MeterOCR
         self.ocr_pipeline = MeterOCR()
-        self.ocr_pipeline.add_callback(self.on_ocr_readings)
+        
+        self.ocr_readings_signal.connect(self.on_ocr_readings)
+        self.ocr_pipeline.add_callback(lambda readings: self.ocr_readings_signal.emit(readings))
 
         self.ocr_feed_tab = OCRFeedTab(self)
-        self.ocr_pipeline.add_frame_callback(self.ocr_feed_tab.receive_frame_threadsafe)
+        
+        # Setup polling for camera frames to prevent Memory Queue leaks
+        self._latest_camera_frame = None
+        self._latest_camera_rois = None
+        
+        def _store_frame(frame, rois):
+            self._latest_camera_frame = frame
+            self._latest_camera_rois = rois
+            
+        self.ocr_pipeline.add_frame_callback(_store_frame)
+        
+        self.camera_poll_timer = QTimer(self)
+        self.camera_poll_timer.timeout.connect(self._poll_camera_frame)
+        self.camera_poll_timer.start(100) # ~10 FPS
         
         # Populate initial values
         self.ocr_feed_tab.refresh_spinboxes()
@@ -2180,9 +2308,8 @@ class MeterApp(QMainWindow):
         
         self.on_mode_changed(0) # Apply initial mode
         
-        # Automatically turn on the camera after 3 seconds
-        QTimer.singleShot(3000, lambda: self.ocr_checkbox.setChecked(True))
         
+
         try:
             if "app_geometry" in self.meter1.config:
                 from PyQt6.QtCore import QByteArray
@@ -2239,10 +2366,32 @@ class MeterApp(QMainWindow):
             self.btn_manual_snap.show()
             self.dataset_checkbox.show()
 
+    def _poll_camera_frame(self):
+        if self._latest_camera_frame is not None:
+            # Pop the reference off so we only process it once
+            frame = self._latest_camera_frame
+            rois = self._latest_camera_rois
+            self._latest_camera_frame = None
+            self.ocr_feed_tab.receive_frame_threadsafe(frame, rois)
+
+    def _save_ocr_config(self):
+        import json
+        self.shared_config["ocr_autolog"] = self.ocr_autolog_checkbox.isChecked()
+        self.shared_config["ocr_dual_mode"] = self.ocr_dual_mode_chk.isChecked()
+        self.shared_config["ocr_discard"] = self.ocr_discard_chk.isChecked()
+        self.shared_config["ocr_enforce_1999"] = self.ocr_enforce_1999_chk.isChecked()
+        self.shared_config["ocr_max_dev"] = self.ocr_max_dev_spin.value()
+        self.shared_config["ocr_burst_count"] = self.spin_burst_count.value()
+        try:
+            with open(self.config_path, "w") as f:
+                json.dump(self.shared_config, f, indent=4)
+        except: pass
+
     def set_ocr_status(self, text, color):
         if hasattr(self, 'status_cam'):
-            self.status_cam.setText(text)
-            self.status_cam.setStyleSheet(f"color: {color}; font-weight: bold; margin-right: 20px;")
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self.status_cam.setText(text))
+            QTimer.singleShot(0, lambda: self.status_cam.setStyleSheet(f"color: {color}; font-weight: bold; margin-right: 20px;"))
 
     def update_meter_status(self, meter_id, is_connected, port=""):
         status_label = self.status_m1 if meter_id == 1 else self.status_m2
@@ -2322,67 +2471,89 @@ class MeterApp(QMainWindow):
         self.btn_calibration_burst.setText(f"⏳ Waiting for Serial ({self.bursts_remaining} left)...")
         self.btn_calibration_burst.setEnabled(False)
 
-    def _sanitize_ocr_value(self, ocr_val, last_serial_ms):
-        try:
+    def _apply_ocr_consensus(self, val_cnn, val_cv, last_serial_ms):
+        def _get_best_permutation(ocr_val):
             if ocr_val == 0.0 or last_serial_ms == 0.0 or last_serial_ms is None:
                 return ocr_val
-                
             raw_str = str(ocr_val).replace('.', '')
-            raw_int = int(raw_str)
+            try: raw_int = int(raw_str)
+            except: return 0.0
             if raw_int == 0: return 0.0
-            raw_str = str(raw_int)
             
+            if getattr(self, 'ocr_enforce_1999_chk', None) and self.ocr_enforce_1999_chk.isChecked():
+                if raw_int > 1999:
+                    try: raw_int = int(str(raw_int)[:4])
+                    except: pass
+                    if raw_int > 1999: return 0.0
+                    
+            raw_str = str(raw_int)
             possible_ms_values = []
             for i in range(len(raw_str) + 1):
-                if i == 0:
-                    s = "0." + raw_str
-                elif i == len(raw_str):
-                    s = raw_str
-                else:
-                    s = raw_str[:i] + "." + raw_str[i:]
-                try:
-                    possible_ms_values.append(float(s))
+                s = "0." + raw_str if i == 0 else raw_str if i == len(raw_str) else raw_str[:i] + "." + raw_str[i:]
+                try: possible_ms_values.append(float(s))
                 except: pass
-                
+            
+            if not possible_ms_values: return 0.0
             best_val = min(possible_ms_values, key=lambda x: abs(x - last_serial_ms))
             
-            if abs(best_val - last_serial_ms) / last_serial_ms > 0.5:
-                return ocr_val
-                
+            max_dev = getattr(self, 'ocr_max_dev_spin', None)
+            dev_thresh = (max_dev.value() / 100.0) if max_dev else 0.5
+            
+            if abs(best_val - last_serial_ms) / last_serial_ms > dev_thresh:
+                return 0.0
             return best_val
-        except Exception as e:
-            print(f"Sanitize error: {e}")
-            return ocr_val
+            
+        cnn_best = _get_best_permutation(val_cnn)
+        cv_best = _get_best_permutation(val_cv)
+        
+        dual_mode = getattr(self, 'ocr_dual_mode_chk', None) and self.ocr_dual_mode_chk.isChecked()
+        discard_bad = getattr(self, 'ocr_discard_chk', None) and self.ocr_discard_chk.isChecked()
+        
+        if dual_mode:
+            if cnn_best != 0.0 and cv_best != 0.0: final_val = cnn_best
+            elif cnn_best != 0.0: final_val = cnn_best
+            elif cv_best != 0.0: final_val = cv_best
+            else: final_val = 0.0
+        else:
+            final_val = cnn_best if cnn_best != 0.0 else cv_best
+            
+        if final_val == 0.0 and not discard_bad:
+            return val_cnn if val_cnn != 0.0 else val_cv
+            
+        return final_val if final_val != 0.0 else None
 
     def on_ocr_readings(self, readings):
         import time
         import datetime
-        if time.time() - getattr(self, 'ocr_start_time', 0) < 10:
-            return
             
-        if self.ocr_status_label.text() != "OCR: Running (1 Hz)":
+        if not getattr(self, 'ocr_running_logged', False):
             self.set_ocr_status("OCR: Running (1 Hz)", "#27ae60")
+            self.ocr_running_logged = True
             
         now = datetime.datetime.now()
         dt_str = now.strftime("%Y-%m-%d %H:%M:%S")
         
         if len(readings) > 0 and readings[0] is not None:
-            c1, _ = readings[0]
-            last_ms = getattr(self.meter1, 'last_serial_cond_ms', 0.0)
-            c1 = self._sanitize_ocr_value(c1, last_ms)
-            t1_display = getattr(self.meter1, 'last_serial_temp', "0.0")
-            row_data1 = (dt_str, "OCR", str(c1*1000), str(c1), t1_display, "0")
-            if self.meter1.is_recording:
-                self.meter1.signals.update_tree.emit(now, row_data1)
+            c1_cnn, c1_cv = readings[0]
+            meter1_start = getattr(self.meter1, 'first_serial_time', None)
+            if meter1_start is not None and time.time() - meter1_start >= 10:
+                last_ms = getattr(self.meter1, 'last_serial_cond_ms', 0.0)
+                c1 = self._apply_ocr_consensus(c1_cnn, c1_cv, last_ms)
+                if c1 is not None:
+                    row_data1 = (dt_str, "OCR", str(c1*1000), str(c1), "-", "0")
+                    if self.meter1.is_recording and getattr(self, 'ocr_autolog_checkbox', None) and self.ocr_autolog_checkbox.isChecked():
+                        self.meter1.signals.update_tree.emit(now, row_data1)
                 
         if len(readings) > 1 and readings[1] is not None:
-            c2, _ = readings[1]
-            last_ms = getattr(self.meter2, 'last_serial_cond_ms', 0.0)
-            c2 = self._sanitize_ocr_value(c2, last_ms)
-            t2_display = getattr(self.meter2, 'last_serial_temp', "0.0")
-            row_data2 = (dt_str, "OCR", str(c2*1000), str(c2), t2_display, "0")
-            if self.meter2.is_recording:
-                self.meter2.signals.update_tree.emit(now, row_data2)
+            c2_cnn, c2_cv = readings[1]
+            meter2_start = getattr(self.meter2, 'first_serial_time', None)
+            if meter2_start is not None and time.time() - meter2_start >= 10:
+                last_ms = getattr(self.meter2, 'last_serial_cond_ms', 0.0)
+                c2 = self._apply_ocr_consensus(c2_cnn, c2_cv, last_ms)
+                if c2 is not None:
+                    row_data2 = (dt_str, "OCR", str(c2*1000), str(c2), "-", "0")
+                    if self.meter2.is_recording and getattr(self, 'ocr_autolog_checkbox', None) and self.ocr_autolog_checkbox.isChecked():
+                        self.meter2.signals.update_tree.emit(now, row_data2)
 
     def get_used_ports(self):
         used = []

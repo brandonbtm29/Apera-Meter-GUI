@@ -144,8 +144,17 @@ class MeterOCR:
                 else:
                     cv2.rectangle(display_frame, (meta['x1'], meta['y1']), (meta['x1']+meta['w1'], meta['y1']+meta['h1']), color, 4)
                 
-                val = self.last_parsed_vals.get(name, 0.0)
-                cv2.putText(display_frame, f"{name}: {val}", (meta['draw_x'], max(30, meta['draw_y']-10)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                val_tuple = self.last_parsed_vals.get(name, (0.0, 0.0))
+                if isinstance(val_tuple, tuple):
+                    v_cnn, v_cv = val_tuple
+                    val = v_cnn if v_cnn != 0.0 else v_cv
+                else:
+                    val = val_tuple
+                
+                last_ms = getattr(self, 'latest_serial_ms', {}).get(name, 0.0)
+                sanitized_val = self._sanitize_for_display(val, last_ms)
+                
+                cv2.putText(display_frame, f"{name}: {sanitized_val:.3f} mS", (meta['draw_x'], max(30, meta['draw_y']-10)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
                 
                 # Draw measurement indicator
                 last_inf = getattr(self, "last_inference_time", 0)
@@ -159,12 +168,11 @@ class MeterOCR:
                 self.last_inference_time = now
                 
             for cb in self.frame_callbacks:
-                try:
-                    cb(display_frame)
+                try: cb(display_frame.copy(), roi_imgs)
                 except Exception as e:
                     pass
                 
-            time.sleep(0.03) # ~30 FPS limit
+            time.sleep(0.1) # ~10 FPS limit
             
     def _order_points(self, pts):
         rect = np.zeros((4, 2), dtype="float32")
@@ -222,6 +230,38 @@ class MeterOCR:
             
         return roi_imgs, roi_metadata
 
+    def _sanitize_for_display(self, ocr_val, last_serial_ms):
+        try:
+            if ocr_val == 0.0 or last_serial_ms == 0.0 or last_serial_ms is None:
+                return float(ocr_val)
+                
+            raw_str = str(ocr_val).replace('.', '')
+            raw_int = int(raw_str)
+            if raw_int == 0: return 0.0
+            raw_str = str(raw_int)
+            
+            possible_ms_values = []
+            for i in range(len(raw_str) + 1):
+                if i == 0:
+                    s = "0." + raw_str
+                elif i == len(raw_str):
+                    s = raw_str
+                else:
+                    s = raw_str[:i] + "." + raw_str[i:]
+                try:
+                    possible_ms_values.append(float(s))
+                except: pass
+                
+            best_val = min(possible_ms_values, key=lambda x: abs(x - last_serial_ms))
+            
+            if abs(best_val - last_serial_ms) / last_serial_ms > 0.5:
+                return float(ocr_val)
+                
+            return float(best_val)
+        except Exception:
+            try: return float(ocr_val)
+            except: return 0.0
+
     def process_frame(self, frame):
         fh, fw, _ = frame.shape
         readings = [None, None]
@@ -231,25 +271,29 @@ class MeterOCR:
         
         for name, roi_img in roi_imgs.items():
             if roi_img.size == 0:
-                parsed_vals[name] = 0.0
+                parsed_vals[name] = (0.0, 0.0)
                 continue
                 
+            val_cv = self.parse_7segment(roi_img)
+            val_cnn = 0.0
+            
             if self.model and self.transform:
                 try:
-                    val = self.predict_cnn(roi_img)
+                    val_cnn = self.predict_cnn(roi_img)
                 except Exception as e:
                     print(f"CNN Error: {e}")
-                    val = self.parse_7segment(roi_img)
+                    val_cnn = val_cv
             else:
-                val = self.parse_7segment(roi_img)
-            parsed_vals[name] = val
+                val_cnn = val_cv
+                
+            parsed_vals[name] = (val_cnn, val_cv)
             
         if not hasattr(self, "last_parsed_vals"):
             self.last_parsed_vals = {}
         self.last_parsed_vals.update(parsed_vals)
             
-        readings[0] = (parsed_vals.get("m1_cond", 0.0), 0.0)
-        readings[1] = (parsed_vals.get("m2_cond", 0.0), 0.0)
+        readings[0] = parsed_vals.get("m1_cond", (0.0, 0.0))
+        readings[1] = parsed_vals.get("m2_cond", (0.0, 0.0))
         
         # Emit to callbacks
         for cb in self.callbacks:
