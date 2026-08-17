@@ -1076,6 +1076,8 @@ class MeterController(QWidget):
                 elif dot == 2: val_float = DP / 100.0
                 elif dot == 3: val_float = DP / 1000.0
                 
+                screen_str = f"{val_float:.{dot}f}"
+                
                 cond_us, cond_ms = "", ""
                 cond_us_val = val_float
                 if mode == 2:
@@ -1177,7 +1179,7 @@ class MeterController(QWidget):
                     if is_manual and getattr(app, 'chk_burst_on_snap', None) and app.chk_burst_on_snap.isChecked():
                         app.calibration_burst_requested = True
                     
-                    def capture_delayed_frame(cap_ts=ts, c_ms=cond_ms, r_cond=str(w4), m_id=self.meter_id, m_flag=is_manual, h_lag=hw_lag):
+                    def capture_delayed_frame(cap_ts=ts, c_ms=cond_ms, s_val=screen_str, r_cond=str(w4), m_id=self.meter_id, m_flag=is_manual, h_lag=hw_lag):
                         import cv2
                         import os
                         import time
@@ -1199,7 +1201,7 @@ class MeterController(QWidget):
                                 crop_dir = os.path.join(app.dataset_session_dir, "extracted_crops")
                                 os.makedirs(crop_dir, exist_ok=True)
                                 cnn_img = cv2.resize(roi_img, (128, 128))
-                                filename = f"{c_ms}_{cap_ts:.3f}_{cap_ts:.3f}_{m_id}.jpg"
+                                filename = f"{s_val}_{cap_ts:.3f}_{cap_ts:.3f}_{m_id}.jpg"
                                 out_path = os.path.join(crop_dir, filename)
                                 cv2.imwrite(out_path, cnn_img)
                                 
@@ -1221,7 +1223,7 @@ class MeterController(QWidget):
                             app.bursts_remaining -= 1
                         app.calibration_burst_meter = self.meter_id
                         app.calibration_burst_serial_ts = time.time()
-                        app.calibration_burst_screen_val = cond_ms
+                        app.calibration_burst_screen_val = screen_str
                         app.calibration_burst_count = 15 # 15 frames @ 30 FPS = ~500ms burst
                         try:
                             app.btn_calibration_burst.setText("Recording Burst...")
@@ -1498,6 +1500,8 @@ class MeterController(QWidget):
             
             wb.save(filepath)
             self.set_status("Exported to Excel!", "#27ae60")
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(3000, lambda: self.set_status("Receiving Data..." if self.is_reading else "Connected", "#27ae60"))
             self.unsaved_changes = False
         except Exception as e:
             try:
@@ -2253,12 +2257,11 @@ class MeterApp(QMainWindow):
         import time
         if state:
             self.ocr_checkbox.setText("🎥 Turn Camera Off")
-            self.set_ocr_status("OCR: Starting Camera...", "#f39c12")
+            self.set_ocr_status("Camera: Feed Active", "#27ae60")
             self.meter1.ocr_active = True
             self.meter2.ocr_active = True
             self.ocr_pipeline.start()
             self.ocr_start_time = time.time()
-            self.set_ocr_status("OCR: Warming up (10s delay)...", "#f39c12")
         else:
             self.ocr_checkbox.setText("🎥 Turn Camera On")
             self.ocr_pipeline.stop()

@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QLabel, QFileDialog, QLineEdit, QMessageBox, QComboBox,
                              QStackedWidget, QListWidget, QListWidgetItem,
                              QTableWidget, QTableWidgetItem, QHeaderView, QSplitter)
-from PyQt6.QtGui import QPixmap, QImage, QIcon
+from PyQt6.QtGui import QPixmap, QImage, QIcon, QColor
 from PyQt6.QtCore import Qt, QSize
 
 class DatasetCurationTab(QWidget):
@@ -398,6 +398,7 @@ class DatasetCurationTab(QWidget):
         os.makedirs(master_dir, exist_ok=True)
         
         added_count = 0
+        skipped_count = 0
         for row in selected_rows:
             screen_item = self.table_images.item(row, 4)
             icon_item = self.table_images.item(row, 5)
@@ -405,24 +406,34 @@ class DatasetCurationTab(QWidget):
             
             label = screen_item.text()
             if label == "Unknown" or not label:
-                # Ask to save label first if it's unknown
-                new_label = self.edit_label.text().strip()
-                if new_label:
-                    label = new_label
-                    self.save_label() # This also reloads selection
-                    # Re-grab since save_label might alter rows or selection
-                    icon_item = self.table_images.item(row, 5)
-                else:
-                    QMessageBox.warning(self, "Label Required", f"Row {row+1} has no label. Please enter a label (e.g. 145.2) before adding to master dataset.")
-                    return
+                QMessageBox.warning(self, "Label Required", f"Row {row+1} has no label (Unknown). Please manually assign it a label using the text box and 'Save Label' button before adding to the master dataset.")
+                return
                     
             file_path = icon_item.data(Qt.ItemDataRole.UserRole)
             if not os.path.exists(file_path): continue
             
+            filename = os.path.basename(file_path)
+            parts = filename.split('_')
+            if len(parts) >= 4:
+                capture_id = "_".join(parts[1:])
+            else:
+                capture_id = filename
+                
+            # Check for duplicates
+            existing = glob.glob(os.path.join(master_dir, "*", f"*_{capture_id}"))
+            if existing:
+                skipped_count += 1
+                # Visually indicate success since it's already safely in the dataset
+                for col in range(self.table_images.columnCount()):
+                    item = self.table_images.item(row, col)
+                    if item:
+                        item.setBackground(QColor("#27AE60"))
+                continue
+            
             label_dir = os.path.join(master_dir, label)
             os.makedirs(label_dir, exist_ok=True)
             
-            new_filename = f"{label}_{uuid.uuid4().hex[:8]}.jpg"
+            new_filename = f"{label}_{capture_id}"
             dest_path = os.path.join(label_dir, new_filename)
             
             shutil.copy2(file_path, dest_path)
@@ -434,41 +445,49 @@ class DatasetCurationTab(QWidget):
                 if item:
                     item.setBackground(QColor("#27AE60"))
                     
-        if added_count > 0:
-            QMessageBox.information(self, "Success", f"Added {added_count} image(s) to Master Dataset\\{label}.")
+        if added_count > 0 or skipped_count > 0:
+            QMessageBox.information(self, "Success", f"Added {added_count} new image(s) to Master Dataset.\nSkipped {skipped_count} duplicate(s).")
 
     def save_label(self):
         selected_items = self.table_images.selectedItems()
         if not selected_items: return
         
-        row = selected_items[0].row()
-        icon_item = self.table_images.item(row, 5)
-        val_item = self.table_images.item(row, 4)
-        if not icon_item: return
-        
         new_val = self.edit_label.text().strip()
         if not new_val: return
-        
-        old_path = icon_item.data(Qt.ItemDataRole.UserRole)
-        filename = os.path.basename(old_path)
-        parts = filename.split('_')
-        
-        if len(parts) >= 2:
-            parts[0] = new_val
-            new_filename = "_".join(parts)
-            new_path = os.path.join(self.current_dir, new_filename)
             
-            try:
-                os.rename(old_path, new_path)
-                icon_item.setData(Qt.ItemDataRole.UserRole, new_path)
-                icon_item.setIcon(QIcon(new_path))
-                if val_item:
-                    val_item.setText(new_val)
-                if old_path in self.image_files:
-                    idx = self.image_files.index(old_path)
-                    self.image_files[idx] = new_path
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not rename file: {e}")
+        selected_rows = sorted(list(set([item.row() for item in selected_items])))
+        if len(selected_rows) > 1:
+            reply = QMessageBox.question(self, "Confirm Batch Rename", f"You are about to batch rename {len(selected_rows)} images to '{new_val}'. Are you sure?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.No: return
+            
+        for row in selected_rows:
+            icon_item = self.table_images.item(row, 5)
+            val_item = self.table_images.item(row, 4)
+            if not icon_item: continue
+            
+            old_path = icon_item.data(Qt.ItemDataRole.UserRole)
+            if not old_path: continue
+            filename = os.path.basename(old_path)
+            parts = filename.split('_')
+            
+            if len(parts) >= 2:
+                parts[0] = new_val
+                new_filename = "_".join(parts)
+                new_path = os.path.join(self.current_dir, new_filename)
+                
+                if old_path == new_path: continue
+                
+                try:
+                    os.rename(old_path, new_path)
+                    icon_item.setData(Qt.ItemDataRole.UserRole, new_path)
+                    icon_item.setIcon(QIcon(new_path))
+                    if val_item:
+                        val_item.setText(new_val)
+                    if old_path in self.image_files:
+                        idx = self.image_files.index(old_path)
+                        self.image_files[idx] = new_path
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Could not rename file {filename}: {e}")
 
     def delete_image(self):
         selected_items = self.table_images.selectedItems()
