@@ -55,6 +55,7 @@ class WorkerSignals(QObject):
     update_tree = pyqtSignal(object, tuple)
     update_status = pyqtSignal(str, str)
     update_device_info = pyqtSignal(str, str)
+    reset_manual_snap = pyqtSignal()
 
 
 class CollapsibleBox(QWidget):
@@ -115,6 +116,7 @@ class MeterController(QWidget):
         self.signals.update_tree.connect(self.log_point_ui)
         self.signals.update_status.connect(self.set_status)
         self.signals.update_device_info.connect(self.set_device_info)
+        self.signals.reset_manual_snap.connect(self._reset_manual_snap_ui)
         
         self.config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
         
@@ -1192,8 +1194,7 @@ class MeterController(QWidget):
                                 
                         if m_flag:
                             try:
-                                QMetaObject.invokeMethod(app.btn_manual_snap, "setText", Qt.ConnectionType.QueuedConnection, Q_ARG(str, "🎯 Arm Capture (Press M+ on Meter)"))
-                                QMetaObject.invokeMethod(app.btn_manual_snap, "setEnabled", Qt.ConnectionType.QueuedConnection, Q_ARG(bool, True))
+                                self.signals.reset_manual_snap.emit()
                             except: pass
                             
                     import threading
