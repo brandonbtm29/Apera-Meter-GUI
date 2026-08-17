@@ -2159,6 +2159,9 @@ class MeterApp(QMainWindow):
         
         self.on_mode_changed(0) # Apply initial mode
         
+        # Automatically turn on the camera after 3 seconds
+        QTimer.singleShot(3000, lambda: self.ocr_checkbox.setChecked(True))
+        
         try:
             if "app_geometry" in self.meter1.config:
                 from PyQt6.QtCore import QByteArray
