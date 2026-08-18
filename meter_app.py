@@ -227,14 +227,6 @@ class MeterController(QWidget):
         self.btn_record.clicked.connect(self.toggle_record)
         l_rec.addWidget(self.btn_record)
         
-        self.auto_dump_chk = QCheckBox("Auto-Dump Memory (hrs):")
-        self.auto_dump_chk.setChecked(self.config.get(f"auto_dump_enabled_{self.meter_id}", False))
-        self.auto_dump_chk.stateChanged.connect(self._save_auto_dump_config)
-        l_rec.addWidget(self.auto_dump_chk)
-        self.auto_dump_entry = QLineEdit(str(self.config.get(f"default_auto_dump_hrs_{self.meter_id}", 2.0)))
-        self.auto_dump_entry.textChanged.connect(self._save_auto_dump_config)
-        l_rec.addWidget(self.auto_dump_entry)
-        
         lag_layout = QHBoxLayout()
         lag_layout.addWidget(QLabel("Hardware Lag (ms):"))
         self.spin_lag = QDoubleSpinBox()
@@ -474,11 +466,6 @@ class MeterController(QWidget):
         ports = self.get_ports()
         self.port_combo.clear()
         self.port_combo.addItems(ports)
-
-    def _save_auto_dump_config(self):
-        self.config[f"auto_dump_enabled_{self.meter_id}"] = self.auto_dump_chk.isChecked()
-        self.config[f"default_auto_dump_hrs_{self.meter_id}"] = self.auto_dump_entry.text()
-        self.save_config()
 
     def _save_autosave_config(self):
         self.config[f"autosave_mode_{self.meter_id}"] = self.combo_autosave.currentText()
@@ -968,7 +955,6 @@ class MeterController(QWidget):
             
             threading.Thread(target=self.read_serial_loop, daemon=True).start()
             threading.Thread(target=self.keep_alive_loop, daemon=True).start()
-            threading.Thread(target=self.auto_dump_loop, daemon=True).start()
         except Exception as e:
             self.set_status(f"Failed to connect: {e}", "red")
             self.btn_connect.setText("🔌 Connect")
@@ -1012,21 +998,10 @@ class MeterController(QWidget):
                             print(f"Meter {self.meter_id} Packet Parse Error: {e}")
             except Exception as e:
                 print(f"Meter {self.meter_id} Serial Error: {e}")
-                self.set_status(f"Disconnected ({type(e).__name__})", "red")
+                self.signals.update_status.emit(f"Disconnected ({type(e).__name__})", "red")
                 self.is_connected = False
                 break
             time.sleep(0.05)
-
-    def auto_dump_loop(self):
-        while self.is_connected:
-            time.sleep(10)
-            if self.is_connected and self.auto_dump_chk.isChecked():
-                try: hours = float(self.auto_dump_entry.text())
-                except ValueError: continue
-                if time.time() - self.last_auto_dump_time > (hours * 3600):
-                    self.last_auto_dump_time = time.time()
-                    if self.ser and self.ser.is_open:
-                        self.ser.write(b"&WA#\r\n")
 
     def keep_alive_loop(self):
         while self.is_connected:
@@ -1151,7 +1126,7 @@ class MeterController(QWidget):
                 row_data = (dt_str, mode_str, cond_us, cond_ms, f"{temp_c:.1f}", str(w4))
                 
                 app = self.parent_app
-                is_continuous = getattr(app, 'dataset_checkbox', None) and app.dataset_checkbox.isChecked()
+                is_continuous = getattr(app, 'shared_config', {}).get("dataset_continuous", False)
                 is_manual = getattr(app, 'manual_snap_requested', False)
                 
                 if self.is_recording:
@@ -1184,10 +1159,10 @@ class MeterController(QWidget):
                         
                     # Retrieve dynamic hardware lag
                     hw_lag = self.config.get(f"hardware_lag_ms_{self.meter_id}", 300)
-                    if getattr(app, 'chk_apply_lag', None) and not app.chk_apply_lag.isChecked():
+                    if not getattr(app, 'shared_config', {}).get("apply_hardware_lag", True):
                         hw_lag = 0.0
                         
-                    if is_manual and getattr(app, 'chk_burst_on_snap', None) and app.chk_burst_on_snap.isChecked():
+                    if is_manual and getattr(app, 'shared_config', {}).get("burst_on_snap", False):
                         app.calibration_burst_requested = True
                     
                     def capture_delayed_frame(cap_ts=ts, c_ms=cond_ms, s_val=screen_str, r_cond=str(w4), m_id=self.meter_id, m_flag=is_manual, h_lag=hw_lag):
@@ -1212,7 +1187,8 @@ class MeterController(QWidget):
                                 crop_dir = os.path.join(app.dataset_session_dir, "extracted_crops")
                                 os.makedirs(crop_dir, exist_ok=True)
                                 cnn_img = cv2.resize(roi_img, (128, 128))
-                                filename = f"{s_val}_{cap_ts:.3f}_{cap_ts:.3f}_{m_id}.jpg"
+                                actual_frame_ts = time.time()
+                                filename = f"{s_val}_{cap_ts:.3f}_{actual_frame_ts:.3f}_{m_id}.jpg"
                                 out_path = os.path.join(crop_dir, filename)
                                 cv2.imwrite(out_path, cnn_img)
                                 
@@ -1237,8 +1213,9 @@ class MeterController(QWidget):
                         app.calibration_burst_screen_val = screen_str
                         app.calibration_burst_count = 15 # 15 frames @ 30 FPS = ~500ms burst
                         try:
-                            app.btn_calibration_burst.setText("Recording Burst...")
-                            app.btn_calibration_burst.setEnabled(False)
+                            from PyQt6.QtCore import QTimer
+                            QTimer.singleShot(0, lambda: app.btn_calibration_burst.setText("Recording Burst..."))
+                            QTimer.singleShot(0, lambda: app.btn_calibration_burst.setEnabled(False))
                         except: pass
                     
             except Exception as e: 
@@ -1274,7 +1251,7 @@ class MeterController(QWidget):
         except ValueError: self.plot_conds.append(0.0)
         
         try: self.plot_temps.append(float(full_row[5]))
-        except ValueError: self.plot_temps.append(0.0)
+        except ValueError: self.plot_temps.append(float('nan'))
         
         self.table.setSortingEnabled(False)
         row_idx = self.table.rowCount()
@@ -1403,7 +1380,10 @@ class MeterController(QWidget):
                     self.ax.set_ylim(cmin, cmax)
                 except: pass
                 
-            self.ax2.plot(x_data, self.plot_temps, marker='s', linestyle='-', color='#e74c3c', label="Temp")
+            import math
+            valid_x = [x for x, y in zip(x_data, self.plot_temps) if not math.isnan(y)]
+            valid_y = [y for y in self.plot_temps if not math.isnan(y)]
+            self.ax2.plot(valid_x, valid_y, marker='s', linestyle='-', color='#e74c3c', label="Temp")
             
             if not self.auto_temp_chk.isChecked():
                 try:
@@ -1515,7 +1495,7 @@ class MeterController(QWidget):
             wb.save(filepath)
             self.set_status("Exported to Excel!", "#27ae60")
             from PyQt6.QtCore import QTimer
-            QTimer.singleShot(3000, lambda: self.set_status("Receiving Data..." if self.is_reading else "Connected", "#27ae60"))
+            QTimer.singleShot(3000, lambda: self.set_status("Receiving Data..." if getattr(self, 'is_recording', False) else "Connected", "#27ae60"))
             self.unsaved_changes = False
         except Exception as e:
             try:
@@ -1849,7 +1829,6 @@ class OCRFeedTab(QWidget):
         
         # 2. Data Insertion
         l_data = make_collapsible("Data Logging & Graphing", left_layout)
-        l_data.addWidget(self.app.mode_combo)
         l_data.addWidget(self.app.ocr_autolog_checkbox)
         l_data.addWidget(self.app.chk_apply_lag)
         
@@ -1869,6 +1848,7 @@ class OCRFeedTab(QWidget):
         
         # 3. Training & Calibration
         l_train = make_collapsible("Training & Calibration", left_layout, default_collapsed=True)
+        l_train.addWidget(self.app.mode_combo)
         l_train.addWidget(self.app.dataset_checkbox)
         l_train.addWidget(self.app.btn_manual_snap)
         l_train.addWidget(self.app.chk_burst_on_snap)
@@ -1888,7 +1868,11 @@ class OCRFeedTab(QWidget):
         l_filters.addLayout(dev_layout)
         
         l_filters.addWidget(self.app.ocr_discard_chk)
-        l_filters.addWidget(self.app.ocr_enforce_1999_chk)
+        
+        max_layout = QHBoxLayout()
+        max_layout.addWidget(self.app.ocr_enforce_max_chk)
+        max_layout.addWidget(self.app.ocr_max_val_spin)
+        l_filters.addLayout(max_layout)
         
         # Draw control
         self.btn_draw = QPushButton("🖌️ Draw ROI")
@@ -2207,9 +2191,14 @@ class MeterApp(QMainWindow):
         self.ocr_discard_chk.setChecked(self.shared_config.get("ocr_discard", False))
         self.ocr_discard_chk.stateChanged.connect(self._save_ocr_config)
         
-        self.ocr_enforce_1999_chk = QCheckBox("Enforce 1999 Max (Clamp Overflow)")
-        self.ocr_enforce_1999_chk.setChecked(self.shared_config.get("ocr_enforce_1999", True))
-        self.ocr_enforce_1999_chk.stateChanged.connect(self._save_ocr_config)
+        self.ocr_enforce_max_chk = QCheckBox("Clamp LCD Overflow (Max Value):")
+        self.ocr_enforce_max_chk.setChecked(self.shared_config.get("ocr_enforce_max", True))
+        self.ocr_enforce_max_chk.stateChanged.connect(self._save_ocr_config)
+        
+        self.ocr_max_val_spin = QSpinBox()
+        self.ocr_max_val_spin.setRange(10, 999999)
+        self.ocr_max_val_spin.setValue(self.shared_config.get("ocr_max_val", 1999))
+        self.ocr_max_val_spin.valueChanged.connect(self._save_ocr_config)
         
         self.ocr_max_dev_spin = QSpinBox()
         self.ocr_max_dev_spin.setRange(1, 1000)
@@ -2236,12 +2225,14 @@ class MeterApp(QMainWindow):
         self.btn_manual_snap.clicked.connect(self.request_manual_snap)
         
         self.chk_apply_lag = QCheckBox("Apply Hardware Lag to Armed Capture")
-        self.chk_apply_lag.setChecked(True)
+        self.chk_apply_lag.setChecked(self.shared_config.get("apply_hardware_lag", True))
         self.chk_apply_lag.setStyleSheet("color: #34495E; font-size: 13px; margin-left: 20px;")
+        self.chk_apply_lag.stateChanged.connect(lambda s: self.shared_config.update({"apply_hardware_lag": bool(s)}))
         
         self.chk_burst_on_snap = QCheckBox("Capture 30-Frame Burst on Armed Capture")
-        self.chk_burst_on_snap.setChecked(False)
+        self.chk_burst_on_snap.setChecked(self.shared_config.get("burst_on_snap", False))
         self.chk_burst_on_snap.setStyleSheet("color: #8E44AD; font-size: 13px; margin-left: 20px;")
+        self.chk_burst_on_snap.stateChanged.connect(lambda s: self.shared_config.update({"burst_on_snap": bool(s)}))
         
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["Mode: Hardware Calibration (Phase 1)", "Mode: OCR Training Dataset Builder"])
@@ -2361,6 +2352,7 @@ class MeterApp(QMainWindow):
             self.btn_manual_snap.hide()
             self.dataset_checkbox.hide()
             self.dataset_checkbox.setChecked(False)
+            self.ocr_autolog_checkbox.setChecked(False)
         else:
             self.btn_calibration_burst.hide()
             self.btn_manual_snap.show()
@@ -2379,7 +2371,8 @@ class MeterApp(QMainWindow):
         self.shared_config["ocr_autolog"] = self.ocr_autolog_checkbox.isChecked()
         self.shared_config["ocr_dual_mode"] = self.ocr_dual_mode_chk.isChecked()
         self.shared_config["ocr_discard"] = self.ocr_discard_chk.isChecked()
-        self.shared_config["ocr_enforce_1999"] = self.ocr_enforce_1999_chk.isChecked()
+        self.shared_config["ocr_enforce_max"] = self.ocr_enforce_max_chk.isChecked()
+        self.shared_config["ocr_max_val"] = self.ocr_max_val_spin.value()
         self.shared_config["ocr_max_dev"] = self.ocr_max_dev_spin.value()
         self.shared_config["ocr_burst_count"] = self.spin_burst_count.value()
         try:
@@ -2421,6 +2414,7 @@ class MeterApp(QMainWindow):
     def toggle_dataset_mode(self, state):
         import os
         import time
+        self.shared_config["dataset_continuous"] = (state == 2)
         if state:
             # Create session folder
             timestamp = int(time.time())
@@ -2480,11 +2474,14 @@ class MeterApp(QMainWindow):
             except: return 0.0
             if raw_int == 0: return 0.0
             
-            if getattr(self, 'ocr_enforce_1999_chk', None) and self.ocr_enforce_1999_chk.isChecked():
-                if raw_int > 1999:
-                    try: raw_int = int(str(raw_int)[:4])
+            if getattr(self, 'ocr_enforce_max_chk', None) and self.ocr_enforce_max_chk.isChecked():
+                limit_spin = getattr(self, 'ocr_max_val_spin', None)
+                limit_val = limit_spin.value() if limit_spin else 1999
+                limit_len = len(str(limit_val))
+                if raw_int > limit_val:
+                    try: raw_int = int(str(raw_int)[:limit_len])
                     except: pass
-                    if raw_int > 1999: return 0.0
+                    if raw_int > limit_val: return 0.0
                     
             raw_str = str(raw_int)
             possible_ms_values = []

@@ -8,6 +8,25 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
 from PyQt6.QtGui import QPixmap, QImage, QIcon, QColor
 from PyQt6.QtCore import Qt, QSize
 
+class NumericTableWidgetItem(QTableWidgetItem):
+    def __lt__(self, other):
+        if (isinstance(other, QTableWidgetItem)):
+            def get_num(text):
+                t = text.replace(" ms", "").replace("Meter ", "")
+                try: return float(t)
+                except ValueError: return None
+            
+            my_num = get_num(self.text())
+            other_num = get_num(other.text())
+            
+            if my_num is not None and other_num is not None:
+                return my_num < other_num
+            elif my_num is not None:
+                return False
+            elif other_num is not None:
+                return True
+        return super().__lt__(other)
+
 class DatasetCurationTab(QWidget):
     def __init__(self, parent_app=None):
         super().__init__()
@@ -296,10 +315,13 @@ class DatasetCurationTab(QWidget):
             self.stacked.setCurrentWidget(self.page_viewer)
 
     def refresh_file_list(self):
+        self.table_images.setSortingEnabled(False)
         self.table_images.setRowCount(0)
         self.image_files = []
         self.refresh_lag_labels()
-        if not self.current_dir: return
+        if not self.current_dir: 
+            self.table_images.setSortingEnabled(True)
+            return
         
         search_path = os.path.join(self.current_dir, "*.jpg")
         self.image_files = sorted(glob.glob(search_path))
@@ -318,7 +340,7 @@ class DatasetCurationTab(QWidget):
             self.table_images.setItem(row, 5, icon_item)
             
             # Column 1: Burst Entry #
-            entry_item = QTableWidgetItem(str(row + 1))
+            entry_item = NumericTableWidgetItem(str(row + 1))
             entry_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table_images.setItem(row, 1, entry_item)
             
@@ -329,37 +351,39 @@ class DatasetCurationTab(QWidget):
                     frame_ts = float(parts[2])
                     meter_id = parts[3]
                     lag_ms = (frame_ts - serial_ts) * 1000.0
-                    dt_str = datetime.fromtimestamp(serial_ts).strftime('%Y-%m-%d %H:%M:%S')
+                    dt_str = datetime.fromtimestamp(serial_ts).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
                 except:
                     serial_ts, frame_ts, meter_id, lag_ms, dt_str = 0.0, 0.0, "?", 0.0, "Unknown"
                     
                 # Column 0: Date/Time
-                dt_item = QTableWidgetItem(dt_str)
+                dt_item = NumericTableWidgetItem(dt_str)
                 dt_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table_images.setItem(row, 0, dt_item)
                 
                 # Column 2: Meter ID
-                m_item = QTableWidgetItem(f"Meter {meter_id}")
+                m_item = NumericTableWidgetItem(f"Meter {meter_id}")
                 m_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table_images.setItem(row, 2, m_item)
                 
                 # Column 3: Hardware Lag
-                lag_item = QTableWidgetItem(f"{lag_ms:.1f} ms")
+                lag_item = NumericTableWidgetItem(f"{lag_ms:.1f} ms")
                 lag_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table_images.setItem(row, 3, lag_item)
                 
                 # Column 4: Serial Value
-                val_item = QTableWidgetItem(screen_val)
+                val_item = NumericTableWidgetItem(screen_val)
                 val_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table_images.setItem(row, 4, val_item)
             else:
-                self.table_images.setItem(row, 0, QTableWidgetItem("Unknown"))
-                self.table_images.setItem(row, 2, QTableWidgetItem("Unknown"))
-                self.table_images.setItem(row, 3, QTableWidgetItem("Unknown"))
-                self.table_images.setItem(row, 4, QTableWidgetItem("Unknown"))
+                self.table_images.setItem(row, 0, NumericTableWidgetItem("Unknown"))
+                self.table_images.setItem(row, 2, NumericTableWidgetItem("Unknown"))
+                self.table_images.setItem(row, 3, NumericTableWidgetItem("Unknown"))
+                self.table_images.setItem(row, 4, NumericTableWidgetItem("Unknown"))
                 
             self.table_images.setRowHeight(row, 100)
             
+        self.table_images.setSortingEnabled(True)
+        self.table_images.sortItems(0, Qt.SortOrder.AscendingOrder)
         self.update_ui_state()
 
     def on_image_selected(self):

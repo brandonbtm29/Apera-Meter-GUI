@@ -47,6 +47,7 @@ class MeterCNN(nn.Module):
         )
         
         self.fc_features = 256 * 8 * 8
+        self.dropout = nn.Dropout(0.3)
         
         # Output layers for Cond (7 chars x 12 classes)
         self.fc_cond = nn.Linear(self.fc_features, 7 * 12)
@@ -54,6 +55,7 @@ class MeterCNN(nn.Module):
     def forward(self, x):
         x = self.features(x)
         x = x.view(x.size(0), -1) # Flatten
+        x = self.dropout(x)
         
         cond_out = self.fc_cond(x).view(-1, 7, 12) # [batch_size, 7, 12]
         
