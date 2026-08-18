@@ -2300,7 +2300,7 @@ class MeterApp(QMainWindow):
         self.tabs.addTab(self.ocr_feed_tab, "Live OCR Feed")
         self.tabs.addTab(self.dataset_curation_tab, "Dataset Curation")
         
-        self.on_mode_changed(0) # Apply initial mode
+        
         
         
 
