@@ -1894,6 +1894,11 @@ class OCRFeedTab(QWidget):
         
         l_filters.addWidget(self.app.ocr_discard_chk)
         
+        phys_max_layout = QHBoxLayout()
+        phys_max_layout.addWidget(self.app.ocr_phys_max_chk)
+        phys_max_layout.addWidget(self.app.ocr_phys_max_spin)
+        l_filters.addLayout(phys_max_layout)
+        
         max_layout = QHBoxLayout()
         max_layout.addWidget(self.app.ocr_enforce_max_chk)
         max_layout.addWidget(self.app.ocr_max_val_spin)
@@ -2225,6 +2230,16 @@ class MeterApp(QMainWindow):
         self.ocr_max_val_spin.setValue(self.shared_config.get("ocr_max_val", 1999))
         self.ocr_max_val_spin.valueChanged.connect(self._save_ocr_config)
         
+        self.ocr_phys_max_chk = QCheckBox("Enforce Absolute Max (mS/cm):")
+        self.ocr_phys_max_chk.setChecked(self.shared_config.get("ocr_phys_max_chk", True))
+        self.ocr_phys_max_chk.stateChanged.connect(self._save_ocr_config)
+        
+        self.ocr_phys_max_spin = QDoubleSpinBox()
+        self.ocr_phys_max_spin.setRange(0.0, 9999.0)
+        self.ocr_phys_max_spin.setDecimals(1)
+        self.ocr_phys_max_spin.setValue(self.shared_config.get("ocr_phys_max_spin", 199.9))
+        self.ocr_phys_max_spin.valueChanged.connect(self._save_ocr_config)
+        
         self.ocr_max_dev_spin = QSpinBox()
         self.ocr_max_dev_spin.setRange(1, 1000)
         self.ocr_max_dev_spin.setValue(self.shared_config.get("ocr_max_dev", 50))
@@ -2383,6 +2398,8 @@ class MeterApp(QMainWindow):
         self.shared_config["ocr_max_val"] = self.ocr_max_val_spin.value()
         self.shared_config["ocr_max_dev"] = self.ocr_max_dev_spin.value()
         self.shared_config["ocr_burst_count"] = self.spin_burst_count.value()
+        self.shared_config["ocr_phys_max_chk"] = self.ocr_phys_max_chk.isChecked()
+        self.shared_config["ocr_phys_max_spin"] = self.ocr_phys_max_spin.value()
         try:
             with open(self.config_path, "w") as f:
                 json.dump(self.shared_config, f, indent=4)
@@ -2558,8 +2575,10 @@ class MeterApp(QMainWindow):
         else:
             result = final_val if final_val != 0.0 else None
             
-        if result is not None and result > 199.9:
-            return None
+        if result is not None and getattr(self, 'ocr_phys_max_chk', None) and self.ocr_phys_max_chk.isChecked():
+            limit_spin = getattr(self, 'ocr_phys_max_spin', None)
+            if limit_spin and result > limit_spin.value():
+                return None
             
         return result
 
