@@ -2537,9 +2537,14 @@ class MeterApp(QMainWindow):
             final_val = cnn_best if cnn_best != 0.0 else cv_best
             
         if final_val == 0.0 and not discard_bad:
-            return val_cnn if val_cnn != 0.0 else val_cv
+            result = val_cnn if val_cnn != 0.0 else val_cv
+        else:
+            result = final_val if final_val != 0.0 else None
             
-        return final_val if final_val != 0.0 else None
+        if result is not None and result > 199.9:
+            return None
+            
+        return result
 
     def on_ocr_readings(self, readings):
         import time
