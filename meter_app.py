@@ -371,7 +371,7 @@ class MeterController(QWidget):
         l_save.addRow("Filename Template:", self.ent_save_template)
         
         self.combo_autosave = QComboBox()
-        self.combo_autosave.addItems(["Off", "On Auto-Stop", "Every X Minutes"])
+        self.combo_autosave.addItems(["Off", "Every X Minutes"])
         self.combo_autosave.setCurrentText(self.config.get(f"autosave_mode_{self.meter_id}", "Off"))
         l_save.addRow("Auto-Save:", self.combo_autosave)
         
@@ -659,7 +659,7 @@ class MeterController(QWidget):
             self.btn_record.setStyleSheet("background-color: #2ecc71; color: white;")
             self.set_status("Paused", "gray")
             
-            if self.combo_autosave.currentText() in ["On Auto-Stop", "Every X Minutes"]:
+            if self.combo_autosave.currentText() == "Every X Minutes":
                 self.save_excel(auto=True)
                 self.txt_notes.append("[Auto-Save] Data saved to directory automatically upon pause.")
             self.ax.set_title(f"Live (Not Recording): Conductivity (Meter {self.meter_id})")
