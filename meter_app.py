@@ -2491,32 +2491,7 @@ class MeterApp(QMainWindow):
         self.btn_calibration_burst.setEnabled(False)
 
     def _apply_ocr_consensus(self, val_cnn, val_cv, last_serial_ms):
-        def _resolve_cnn(ocr_val):
-            if ocr_val == 0.0 or last_serial_ms == 0.0 or last_serial_ms is None:
-                return ocr_val
-                
-            raw_str = str(ocr_val).replace('.', '')
-            try: raw_int = int(raw_str)
-            except: raw_int = 0
-            if raw_int == 0: return 0.0
-            
-            if getattr(self, 'ocr_enforce_max_chk', None) and self.ocr_enforce_max_chk.isChecked():
-                limit_spin = getattr(self, 'ocr_max_val_spin', None)
-                limit_val = limit_spin.value() if limit_spin else 1999
-                if raw_int > limit_val:
-                    return 0.0 # Discard overflow predictions entirely
-                    
-            possible_ms = [ocr_val, ocr_val / 1000.0]
-            best_val = min(possible_ms, key=lambda x: abs(x - last_serial_ms))
-            
-            max_dev = getattr(self, 'ocr_max_dev_spin', None)
-            dev_thresh = (max_dev.value() / 100.0) if max_dev else 0.5
-            
-            if abs(best_val - last_serial_ms) / last_serial_ms > dev_thresh:
-                return 0.0
-            return best_val
-            
-        def _get_best_permutation(ocr_val):
+        def _get_best_permutation(ocr_val, apply_dev_filter=True):
             if ocr_val == 0.0 or last_serial_ms == 0.0 or last_serial_ms is None:
                 return ocr_val
             raw_str = str(ocr_val).replace('.', '')
@@ -2549,15 +2524,15 @@ class MeterApp(QMainWindow):
             if not possible_ms_values: return 0.0
             best_val = min(possible_ms_values, key=lambda x: abs(x - last_serial_ms))
             
-            max_dev = getattr(self, 'ocr_max_dev_spin', None)
-            dev_thresh = (max_dev.value() / 100.0) if max_dev else 0.5
-            
-            if abs(best_val - last_serial_ms) / last_serial_ms > dev_thresh:
-                return 0.0
+            if apply_dev_filter:
+                max_dev = getattr(self, 'ocr_max_dev_spin', None)
+                dev_thresh = (max_dev.value() / 100.0) if max_dev else 0.5
+                if abs(best_val - last_serial_ms) / last_serial_ms > dev_thresh:
+                    return 0.0
             return best_val
             
-        cnn_best = _resolve_cnn(val_cnn)
-        cv_best = _get_best_permutation(val_cv)
+        cnn_best = _get_best_permutation(val_cnn, True)
+        cv_best = _get_best_permutation(val_cv, True)
         
         dual_mode = getattr(self, 'ocr_dual_mode_chk', None) and self.ocr_dual_mode_chk.isChecked()
         discard_bad = getattr(self, 'ocr_discard_chk', None) and self.ocr_discard_chk.isChecked()
@@ -2571,7 +2546,9 @@ class MeterApp(QMainWindow):
             final_val = cnn_best if cnn_best != 0.0 else cv_best
             
         if final_val == 0.0 and not discard_bad:
-            result = val_cnn if val_cnn != 0.0 else val_cv
+            cnn_raw = _get_best_permutation(val_cnn, False)
+            cv_raw = _get_best_permutation(val_cv, False)
+            result = cnn_raw if cnn_raw != 0.0 else cv_raw
         else:
             result = final_val if final_val != 0.0 else None
             
