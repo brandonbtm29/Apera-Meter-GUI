@@ -1849,7 +1849,7 @@ class OCRFeedTab(QWidget):
         # 3. Training & Calibration
         l_train = make_collapsible("Training & Calibration", left_layout, default_collapsed=True)
         
-        lbl_phase1 = QLabel("Mode: Hardware Calibration (Phase 1)")
+        lbl_phase1 = QLabel("Mode: Hardware Calibration")
         lbl_phase1.setStyleSheet("font-weight: bold; font-size: 13px; padding-top: 10px; color: #E67E22;")
         l_train.addWidget(lbl_phase1)
         
@@ -2123,7 +2123,7 @@ class OCRFeedTab(QWidget):
                         
                 try:
                     from PyQt6.QtCore import QTimer
-                    QTimer.singleShot(0, lambda: self.app.btn_calibration_burst.setText("🎯 Capture Calibration Burst (Phase 1)"))
+                    QTimer.singleShot(0, lambda: self.app.btn_calibration_burst.setText("🎯 Capture Calibration Burst"))
                     QTimer.singleShot(0, lambda: self.app.btn_calibration_burst.setEnabled(True))
                 except: pass
                 
