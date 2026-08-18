@@ -279,6 +279,11 @@ class MeterController(QWidget):
         self.xaxis_combo.setCurrentText(self.config.get(f"xaxis_{self.meter_id}", "X-Axis: DateTime"))
         form_layout.addRow("Plot Mode:", self.xaxis_combo)
         
+        self.unit_combo = QComboBox()
+        self.unit_combo.addItems(["Graph Unit: uS/cm", "Graph Unit: mS/cm"])
+        self.unit_combo.setCurrentText(self.config.get(f"graph_unit_{self.meter_id}", "Graph Unit: uS/cm"))
+        form_layout.addRow("Unit:", self.unit_combo)
+        
         l_axis.addLayout(form_layout)
         
         self.btn_apply_lims = QPushButton("📊 Apply Limits")
@@ -686,6 +691,7 @@ class MeterController(QWidget):
             self.config[f"temp_min_{self.meter_id}"] = self.ent_temp_min.text()
             self.config[f"temp_max_{self.meter_id}"] = self.ent_temp_max.text()
             self.config[f"xaxis_{self.meter_id}"] = self.xaxis_combo.currentText()
+            self.config[f"graph_unit_{self.meter_id}"] = self.unit_combo.currentText()
             self.config[f"auto_time_{self.meter_id}"] = self.auto_time_chk.isChecked()
             self.config[f"auto_cond_{self.meter_id}"] = self.auto_cond_chk.isChecked()
             self.config[f"auto_temp_{self.meter_id}"] = self.auto_temp_chk.isChecked()
@@ -1322,7 +1328,13 @@ class MeterController(QWidget):
             self.ax.set_title(f"Live: Conductivity (Meter {self.meter_id})", color='white')
             
         self.ax.set_xlabel("Time", color='white')
-        self.ax.set_ylabel("Conductivity (uS/cm)", color='#3498db')
+        
+        is_us = self.unit_combo.currentText() == "Graph Unit: uS/cm"
+        if is_us:
+            self.ax.set_ylabel("Conductivity (uS/cm)", color='#3498db')
+        else:
+            self.ax.set_ylabel("Conductivity (mS/cm)", color='#3498db')
+            
         self.ax.grid(True, linestyle='--', alpha=0.3)
         self.ax.tick_params(colors='white')
         self.ax2.set_ylabel("Temperature (°C)", color='#e74c3c')
@@ -1360,7 +1372,12 @@ class MeterController(QWidget):
                 x_data = self.plot_dates
                 self.ax.set_xlabel("Time", color='white')
                 
-            self.ax.plot(x_data, self.plot_conds, marker='o', linestyle='-', color='#3498db', label="Cond")
+            if is_us:
+                plot_y = [y * 1000.0 for y in self.plot_conds]
+            else:
+                plot_y = self.plot_conds
+                
+            self.ax.plot(x_data, plot_y, marker='o', linestyle='-', color='#3498db', label="Cond")
             
             if not self.auto_time_chk.isChecked():
                 try:
