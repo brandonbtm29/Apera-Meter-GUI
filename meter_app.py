@@ -1848,15 +1848,23 @@ class OCRFeedTab(QWidget):
         
         # 3. Training & Calibration
         l_train = make_collapsible("Training & Calibration", left_layout, default_collapsed=True)
-        l_train.addWidget(self.app.mode_combo)
-        l_train.addWidget(self.app.dataset_checkbox)
-        l_train.addWidget(self.app.btn_manual_snap)
-        l_train.addWidget(self.app.chk_burst_on_snap)
+        
+        lbl_phase1 = QLabel("Mode: Hardware Calibration (Phase 1)")
+        lbl_phase1.setStyleSheet("font-weight: bold; font-size: 13px; padding-top: 10px; color: #E67E22;")
+        l_train.addWidget(lbl_phase1)
         
         burst_layout = QHBoxLayout()
         burst_layout.addWidget(self.app.btn_calibration_burst)
         burst_layout.addWidget(self.app.spin_burst_count)
         l_train.addLayout(burst_layout)
+        
+        lbl_phase2 = QLabel("Mode: OCR Training Dataset Builder")
+        lbl_phase2.setStyleSheet("font-weight: bold; font-size: 13px; padding-top: 10px; color: #E67E22;")
+        l_train.addWidget(lbl_phase2)
+        
+        l_train.addWidget(self.app.dataset_checkbox)
+        l_train.addWidget(self.app.btn_manual_snap)
+        l_train.addWidget(self.app.chk_burst_on_snap)
         
         # 4. OCR Filters & Sanity Checks
         l_filters = make_collapsible("OCR Filters & Sanity Checks", left_layout)
@@ -2234,11 +2242,6 @@ class MeterApp(QMainWindow):
         self.chk_burst_on_snap.setStyleSheet("color: #8E44AD; font-size: 13px; margin-left: 20px;")
         self.chk_burst_on_snap.stateChanged.connect(lambda s: self.shared_config.update({"burst_on_snap": bool(s)}))
         
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Mode: Hardware Calibration (Phase 1)", "Mode: OCR Training Dataset Builder"])
-        self.mode_combo.setStyleSheet("font-weight: bold; font-size: 14px; padding: 5px; color: #E67E22;")
-        self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
-        
         from ocr_pipeline import MeterOCR
         self.ocr_pipeline = MeterOCR()
         
@@ -2345,18 +2348,6 @@ class MeterApp(QMainWindow):
         subprocess.Popen(args)
         QApplication.quit()
 
-
-    def on_mode_changed(self, index):
-        if index == 0:
-            self.btn_calibration_burst.show()
-            self.btn_manual_snap.hide()
-            self.dataset_checkbox.hide()
-            self.dataset_checkbox.setChecked(False)
-            self.ocr_autolog_checkbox.setChecked(False)
-        else:
-            self.btn_calibration_burst.hide()
-            self.btn_manual_snap.show()
-            self.dataset_checkbox.show()
 
     def _poll_camera_frame(self):
         if self._latest_camera_frame is not None:
