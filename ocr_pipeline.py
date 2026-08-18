@@ -151,10 +151,12 @@ class MeterOCR:
                 else:
                     val = val_tuple
                 
-                last_ms = getattr(self, 'latest_serial_ms', {}).get(name, 0.0)
-                sanitized_val = self._sanitize_for_display(val, last_ms)
-                
-                cv2.putText(display_frame, f"{name}: {sanitized_val:.3f} mS", (meta['draw_x'], max(30, meta['draw_y']-10)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                # Show exactly what the OCR read
+                display_str = str(val)
+                if display_str.endswith('.0'): 
+                    display_str = display_str[:-2]
+                    
+                cv2.putText(display_frame, f"{name}: {display_str}", (meta['draw_x'], max(30, meta['draw_y']-10)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
                 
                 # Draw measurement indicator
                 last_inf = getattr(self, "last_inference_time", 0)

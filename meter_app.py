@@ -2466,6 +2466,31 @@ class MeterApp(QMainWindow):
         self.btn_calibration_burst.setEnabled(False)
 
     def _apply_ocr_consensus(self, val_cnn, val_cv, last_serial_ms):
+        def _resolve_cnn(ocr_val):
+            if ocr_val == 0.0 or last_serial_ms == 0.0 or last_serial_ms is None:
+                return ocr_val
+                
+            raw_str = str(ocr_val).replace('.', '')
+            try: raw_int = int(raw_str)
+            except: raw_int = 0
+            if raw_int == 0: return 0.0
+            
+            if getattr(self, 'ocr_enforce_max_chk', None) and self.ocr_enforce_max_chk.isChecked():
+                limit_spin = getattr(self, 'ocr_max_val_spin', None)
+                limit_val = limit_spin.value() if limit_spin else 1999
+                if raw_int > limit_val:
+                    return 0.0 # Discard overflow predictions entirely
+                    
+            possible_ms = [ocr_val, ocr_val / 1000.0]
+            best_val = min(possible_ms, key=lambda x: abs(x - last_serial_ms))
+            
+            max_dev = getattr(self, 'ocr_max_dev_spin', None)
+            dev_thresh = (max_dev.value() / 100.0) if max_dev else 0.5
+            
+            if abs(best_val - last_serial_ms) / last_serial_ms > dev_thresh:
+                return 0.0
+            return best_val
+            
         def _get_best_permutation(ocr_val):
             if ocr_val == 0.0 or last_serial_ms == 0.0 or last_serial_ms is None:
                 return ocr_val
@@ -2489,6 +2514,12 @@ class MeterApp(QMainWindow):
                 s = "0." + raw_str if i == 0 else raw_str if i == len(raw_str) else raw_str[:i] + "." + raw_str[i:]
                 try: possible_ms_values.append(float(s))
                 except: pass
+                
+            # Allow leading zeros for uS values (e.g. 145 -> 0.0145 mS)
+            for z in range(1, 4):
+                s = "0." + ("0" * z) + raw_str
+                try: possible_ms_values.append(float(s))
+                except: pass
             
             if not possible_ms_values: return 0.0
             best_val = min(possible_ms_values, key=lambda x: abs(x - last_serial_ms))
@@ -2500,7 +2531,7 @@ class MeterApp(QMainWindow):
                 return 0.0
             return best_val
             
-        cnn_best = _get_best_permutation(val_cnn)
+        cnn_best = _resolve_cnn(val_cnn)
         cv_best = _get_best_permutation(val_cv)
         
         dual_mode = getattr(self, 'ocr_dual_mode_chk', None) and self.ocr_dual_mode_chk.isChecked()
