@@ -34,9 +34,18 @@ class MeterCRNN(nn.Module):
     def __init__(self, freeze_backbone=False):
         super(MeterCRNN, self).__init__()
         
-        # Load a pretrained ResNet34 backbone for more parameters
-        resnet = models.resnet34(weights=models.ResNet34_Weights.DEFAULT)
-        # Keep up to Layer 2 (downsamples by 8 instead of 16)
+        # Load ResNet34
+        resnet = models.resnet34(weights=None)
+        
+        # Load local weights if present, bypassing torchvision URL download
+        weights_path = "resnet34-b627a593.pth"
+        import os
+        if os.path.exists(weights_path):
+            resnet.load_state_dict(torch.load(weights_path))
+            print("Loaded local ResNet34 weights successfully.")
+            
+        # We need to remove the fully connected layer and pooling
+        # ResNet34 has 4 downsampling stages (layer1, layer2, layer3, layer4)
         self.backbone = nn.Sequential(*list(resnet.children())[:-4])
         
         if freeze_backbone:
@@ -71,8 +80,18 @@ class MeterCRNN(nn.Module):
         
         x = self.dropout(x)
         
+        # RNN (torch-directml has bugs with LSTM, run this small part on CPU)
+        orig_device = x.device
+        if orig_device.type == 'privateuseone':
+            self.lstm = self.lstm.cpu()
+            x = x.cpu()
+            
         # Scan across image width
         lstm_out, _ = self.lstm(x) # [batch_size, 32, 256]
+        
+        if orig_device.type == 'privateuseone':
+            lstm_out = lstm_out.to(orig_device)
+            self.fc_cond = self.fc_cond.to(orig_device)
         
         # Produce logits for each timestep
         cond_out = self.fc_cond(lstm_out) # [batch_size, 32, 12]
