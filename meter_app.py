@@ -144,7 +144,7 @@ class MeterController(QWidget):
         self.config.setdefault(f"autosave_min_{meter_id}", "5.0")
         self.config.setdefault(f"save_template_{meter_id}", f"Meter_<{meter_id}>_<Date>")
         
-        self.columns = ("DateTime", "Duration (min)", "Mode", "Cond (uS/cm)", "Cond (mS/cm)", "Temp (°C)", "Raw Cond_ADC")
+        self.columns = ("DateTime", "Duration (min)", "Mode", "Cond (uS/cm)", "Cond (mS/cm)", "Unit", "Temp (°C)", "OCR Conf (%)")
         self.setup_backup_path()
         self.init_ui()
         
@@ -277,11 +277,13 @@ class MeterController(QWidget):
         self.xaxis_combo = QComboBox()
         self.xaxis_combo.addItems(["X-Axis: DateTime", "X-Axis: Duration (min)"])
         self.xaxis_combo.setCurrentText(self.config.get(f"xaxis_{self.meter_id}", "X-Axis: DateTime"))
+        self.xaxis_combo.currentTextChanged.connect(lambda _: self.apply_limits())
         form_layout.addRow("Plot Mode:", self.xaxis_combo)
         
         self.unit_combo = QComboBox()
         self.unit_combo.addItems(["Graph Unit: uS/cm", "Graph Unit: mS/cm"])
         self.unit_combo.setCurrentText(self.config.get(f"graph_unit_{self.meter_id}", "Graph Unit: uS/cm"))
+        self.unit_combo.currentTextChanged.connect(self.on_unit_changed)
         form_layout.addRow("Unit:", self.unit_combo)
         
         l_axis.addLayout(form_layout)
@@ -303,13 +305,16 @@ class MeterController(QWidget):
         # Middle Panel (Plot & Table)
         mid_splitter = QSplitter(Qt.Orientation.Vertical)
         
-        self.fig, self.ax = plt.subplots(figsize=(5, 4))
+        self.fig, (self.ax, self.ax_temp) = plt.subplots(2, 1, figsize=(5, 5), gridspec_kw={'height_ratios': [3, 1]})
         self.ax.set_title(f"Live Conductivity (Meter {self.meter_id})")
-        self.ax.set_xlabel("Time")
-        self.ax.set_ylabel("Conductivity (uS/cm)", color='#3498db')
+        self.ax.set_ylabel("Conductivity", color='#3498db')
         self.ax.grid(True, linestyle='--', alpha=0.3)
         self.ax2 = self.ax.twinx()
-        self.ax2.set_ylabel("Temperature (°C)", color='#e74c3c')
+        self.ax2.set_ylabel("d(log C)/dt", color='#9b59b6')
+        
+        self.ax_temp.set_xlabel("Time")
+        self.ax_temp.set_ylabel("Temp (°C)", color='#e74c3c')
+        self.ax_temp.grid(True, linestyle='--', alpha=0.3)
         self.fig.tight_layout()
         
         self.canvas = FigureCanvasQTAgg(self.fig)
@@ -683,6 +688,23 @@ class MeterController(QWidget):
         except: pass
         self.plot_data()
 
+    def on_unit_changed(self, new_text):
+        old_unit = self.config.get(f"graph_unit_{self.meter_id}", "Graph Unit: uS/cm")
+        if old_unit != new_text:
+            try:
+                cmin = float(self.ent_cond_min.text())
+                cmax = float(self.ent_cond_max.text())
+                if new_text == "Graph Unit: uS/cm" and old_unit == "Graph Unit: mS/cm":
+                    self.ent_cond_min.setText(str(cmin * 1000.0))
+                    self.ent_cond_max.setText(str(cmax * 1000.0))
+                elif new_text == "Graph Unit: mS/cm" and old_unit == "Graph Unit: uS/cm":
+                    self.ent_cond_min.setText(str(cmin / 1000.0))
+                    self.ent_cond_max.setText(str(cmax / 1000.0))
+            except Exception:
+                pass
+            self.config[f"graph_unit_{self.meter_id}"] = new_text
+            self.apply_limits()
+
     def apply_limits(self, checked=False):
         try:
             self.config[f"time_win_{self.meter_id}"] = self.ent_time_win.text()
@@ -805,9 +827,11 @@ class MeterController(QWidget):
         layout.addWidget(scroll)
         
         btn_layout = QHBoxLayout()
-        btn_restore = QPushButton("Restore Selected")
+        btn_restore = QPushButton("♻️ Restore Selected")
+        btn_delete = QPushButton("🗑️ Delete Selected")
         btn_ignore = QPushButton("Cancel")
         btn_layout.addWidget(btn_restore)
+        btn_layout.addWidget(btn_delete)
         btn_layout.addWidget(btn_ignore)
         layout.addLayout(btn_layout)
         
@@ -844,10 +868,10 @@ class MeterController(QWidget):
                                 if not getattr(self, 'session_start_time', None):
                                     self.session_start_time = dt
                                 self.plot_dates.append(dt)
-                                try: self.plot_conds.append(float(row[3]))
+                                try: self.plot_conds.append(float(row[4]))
                                 except ValueError: self.plot_conds.append(0.0)
                                 
-                                try: self.plot_temps.append(float(row[5]))
+                                try: self.plot_temps.append(float(row[6]))
                                 except ValueError: self.plot_temps.append(0.0)
                             except: pass
                             
@@ -860,7 +884,30 @@ class MeterController(QWidget):
                     QMessageBox.critical(self, "Error", f"Recovery failed: {e}")
             dialog.accept()
             
+        def do_delete(checked=False):
+            idx = bg.checkedId()
+            if idx >= 0:
+                s = sessions[idx]
+                try:
+                    with open(self.backup_path, 'r', newline='', encoding='utf-8') as f:
+                        reader = csv.reader(f)
+                        header = next(reader, None)
+                        rows = list(reader)
+                        
+                    del rows[s["start_idx"]:s["end_idx"]+1]
+                    
+                    with open(self.backup_path, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.writer(f)
+                        if header: writer.writerow(header)
+                        writer.writerows(rows)
+                        
+                    QMessageBox.information(self, "Deleted", "Session permanently deleted from backup.")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Deletion failed: {e}")
+            dialog.accept()
+            
         btn_restore.clicked.connect(do_restore)
+        btn_delete.clicked.connect(do_delete)
         btn_ignore.clicked.connect(dialog.reject)
         dialog.exec()
 
@@ -1063,6 +1110,7 @@ class MeterController(QWidget):
                 screen_str = f"{val_float:.{dot}f}"
                 
                 cond_us, cond_ms = "", ""
+                unit_str = "-"
                 cond_us_val = val_float
                 if mode == 2:
                     u_val = b + 10
@@ -1070,10 +1118,12 @@ class MeterController(QWidget):
                         cond_ms = f"{val_float:.3f}"
                         cond_us = f"{val_float * 1000:.1f}"
                         cond_us_val = val_float * 1000
+                        unit_str = "mS/cm"
                     elif u_val == 11: 
                         cond_ms = f"{val_float / 1000:.3f}"
                         cond_us = f"{val_float:.1f}"
                         cond_us_val = val_float
+                        unit_str = "uS/cm"
                     val_changed = False
                     try: 
                         new_ms = float(cond_ms)
@@ -1129,7 +1179,7 @@ class MeterController(QWidget):
                 if dt_str in self.received_timestamps: return
                 self.received_timestamps.add(dt_str)
                 
-                row_data = (dt_str, mode_str, cond_us, cond_ms, f"{temp_c:.1f}", str(w4))
+                row_data = (dt_str, mode_str, cond_us, cond_ms, unit_str, f"{temp_c:.1f}")
                 
                 app = self.parent_app
                 is_continuous = getattr(app, 'shared_config', {}).get("dataset_continuous", False)
@@ -1248,15 +1298,17 @@ class MeterController(QWidget):
         duration_min = (dt - self.session_start_time).total_seconds() / 60.0
         
         if len(row_data) == 6:
-            full_row = (row_data[0], f"{duration_min:.2f}", row_data[1], row_data[2], row_data[3], row_data[4], row_data[5])
+            full_row = (row_data[0], f"{duration_min:.2f}", row_data[1], row_data[2], row_data[3], row_data[4], row_data[5], "-")
+        elif len(row_data) == 7:
+            full_row = (row_data[0], f"{duration_min:.2f}", row_data[1], row_data[2], row_data[3], row_data[4], row_data[5], row_data[6])
         else:
             full_row = row_data
             
         self.plot_dates.append(dt)
-        try: self.plot_conds.append(float(full_row[3]))
+        try: self.plot_conds.append(float(full_row[4]))
         except ValueError: self.plot_conds.append(0.0)
         
-        try: self.plot_temps.append(float(full_row[5]))
+        try: self.plot_temps.append(float(full_row[6]))
         except ValueError: self.plot_temps.append(float('nan'))
         
         self.table.setSortingEnabled(False)
@@ -1320,6 +1372,7 @@ class MeterController(QWidget):
         self._plot_scheduled = False
         self.ax.clear()
         self.ax2.clear()
+        self.ax_temp.clear()
 
         self.ax.set_yscale('log')
         if self.is_recording:
@@ -1337,8 +1390,14 @@ class MeterController(QWidget):
             
         self.ax.grid(True, linestyle='--', alpha=0.3)
         self.ax.tick_params(colors='white')
-        self.ax2.set_ylabel("Temperature (°C)", color='#e74c3c')
+        
+        self.ax2.set_ylabel("d(log C)/dt", color='#9b59b6')
         self.ax2.tick_params(colors='white')
+        
+        self.ax_temp.set_ylabel("Temp (°C)", color='#e74c3c')
+        self.ax_temp.tick_params(colors='white')
+        self.ax_temp.grid(True, linestyle='--', alpha=0.3)
+        self.ax_temp.set_facecolor('#1e1e2e')
         
         # Style adjustments for dark theme integration
         self.fig.patch.set_facecolor('#1e1e2e')
@@ -1346,6 +1405,10 @@ class MeterController(QWidget):
         
         if self.plot_dates:
             import matplotlib.ticker as ticker
+            
+            # Sort all arrays by date to prevent zig-zag lines from async threads
+            sorted_data = sorted(zip(self.plot_dates, self.plot_conds, self.plot_temps), key=lambda x: x[0])
+            self.plot_dates, self.plot_conds, self.plot_temps = [list(x) for x in zip(*sorted_data)]
             
             is_duration = self.xaxis_combo.currentText() == "X-Axis: Duration (min)"
             
@@ -1367,10 +1430,10 @@ class MeterController(QWidget):
 
             if is_duration:
                 x_data = durations
-                self.ax.set_xlabel("Duration (min)", color='white')
+                self.ax_temp.set_xlabel("Duration (min)", color='white')
             else:
                 x_data = self.plot_dates
-                self.ax.set_xlabel("Time", color='white')
+                self.ax_temp.set_xlabel("Time", color='white')
                 
             if is_us:
                 plot_y = [y * 1000.0 for y in self.plot_conds]
@@ -1400,21 +1463,42 @@ class MeterController(QWidget):
             import math
             valid_x = [x for x, y in zip(x_data, self.plot_temps) if not math.isnan(y)]
             valid_y = [y for y in self.plot_temps if not math.isnan(y)]
-            self.ax2.plot(valid_x, valid_y, marker='s', linestyle='-', color='#e74c3c', label="Temp")
+            self.ax_temp.plot(valid_x, valid_y, marker='s', linestyle='-', color='#e74c3c', label="Temp")
+            
+            # Calculate and plot derivative
+            if len(plot_y) > 1:
+                import numpy as np
+                y_arr = np.array(plot_y, dtype=float)
+                y_arr[y_arr <= 0] = 1e-9
+                log_y = np.log10(y_arr)
+                deriv = None
+                if len(log_y) > 5:
+                    try:
+                        import scipy.signal
+                        deriv = scipy.signal.savgol_filter(log_y, window_length=5, polyorder=2, deriv=1)
+                    except:
+                        pass
+                if deriv is None:
+                    deriv = np.gradient(log_y)
+                self.ax2.plot(x_data, deriv, color='#9b59b6', linestyle='-', alpha=0.6, label="d(log)/dt")
             
             if not self.auto_temp_chk.isChecked():
                 try:
                     tmin = float(self.ent_temp_min.text())
                     tmax = float(self.ent_temp_max.text())
-                    self.ax2.set_ylim(tmin, tmax)
+                    self.ax_temp.set_ylim(tmin, tmax)
                 except: pass
                 
             if is_duration:
-                self.ax.xaxis.set_major_formatter(ticker.ScalarFormatter())
+                self.ax_temp.xaxis.set_major_formatter(ticker.ScalarFormatter())
                 self.fig.autofmt_xdate(rotation=0, ha='center')
             else:
-                self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+                self.ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
                 self.fig.autofmt_xdate()
+            
+            # Hide x-axis labels on top plot
+            plt.setp(self.ax.get_xticklabels(), visible=False)
+            self.ax.set_xlabel("")
             
         self.fig.tight_layout()
         self.canvas.draw_idle()
@@ -1849,20 +1933,6 @@ class OCRFeedTab(QWidget):
         l_data.addWidget(self.app.ocr_autolog_checkbox)
         l_data.addWidget(self.app.chk_apply_lag)
         
-        l_data.addWidget(QLabel("OCR Sampling Rate (s) [0.25 - 60.0]:"))
-        self.ocr_interval_spin = QDoubleSpinBox()
-        self.ocr_interval_spin.setRange(0.25, 60.0)
-        self.ocr_interval_spin.setDecimals(2)
-        self.ocr_interval_spin.setSingleStep(0.1)
-        
-        default_interval = self.app.shared_config.get("ocr_interval", 1.0) if self.app else 1.0
-        if self.app and hasattr(self.app, 'ocr_pipeline'):
-            self.app.ocr_pipeline.ocr_interval = default_interval
-        self.ocr_interval_spin.setValue(default_interval)
-        
-        self.ocr_interval_spin.valueChanged.connect(self.on_ocr_interval_changed)
-        l_data.addWidget(self.ocr_interval_spin)
-        
         # 3. Training & Calibration
         l_train = make_collapsible("Training & Calibration", left_layout, default_collapsed=True)
         
@@ -1888,11 +1958,17 @@ class OCRFeedTab(QWidget):
         l_filters.addWidget(self.app.ocr_dual_mode_chk)
         
         dev_layout = QHBoxLayout()
-        dev_layout.addWidget(QLabel("Max Allowed Deviation (%):"))
+        dev_layout.addWidget(self.app.ocr_enforce_dev_chk)
         dev_layout.addWidget(self.app.ocr_max_dev_spin)
         l_filters.addLayout(dev_layout)
         
         l_filters.addWidget(self.app.ocr_discard_chk)
+        l_filters.addWidget(self.app.ocr_midpoint_chk)
+        
+        conf_layout = QHBoxLayout()
+        conf_layout.addWidget(QLabel("CNN Min Confidence (0=Off):"))
+        conf_layout.addWidget(self.app.ocr_conf_spin)
+        l_filters.addLayout(conf_layout)
         
         phys_max_layout = QHBoxLayout()
         phys_max_layout.addWidget(self.app.ocr_phys_max_chk)
@@ -2221,6 +2297,17 @@ class MeterApp(QMainWindow):
         self.ocr_discard_chk.setChecked(self.shared_config.get("ocr_discard", False))
         self.ocr_discard_chk.stateChanged.connect(self._save_ocr_config)
         
+        self.ocr_midpoint_chk = QCheckBox("Smooth Sub-interval Reads (Midpoint Mean)")
+        self.ocr_midpoint_chk.setChecked(self.shared_config.get("ocr_midpoint", True))
+        self.ocr_midpoint_chk.stateChanged.connect(self._save_ocr_config)
+        
+        self.ocr_conf_spin = QDoubleSpinBox()
+        self.ocr_conf_spin.setRange(0.0, 1.0)
+        self.ocr_conf_spin.setSingleStep(0.05)
+        self.ocr_conf_spin.setDecimals(2)
+        self.ocr_conf_spin.setValue(self.shared_config.get("ocr_conf", 0.0))
+        self.ocr_conf_spin.valueChanged.connect(self._save_ocr_config)
+        
         self.ocr_enforce_max_chk = QCheckBox("Clamp LCD Overflow (Max Value):")
         self.ocr_enforce_max_chk.setChecked(self.shared_config.get("ocr_enforce_max", True))
         self.ocr_enforce_max_chk.stateChanged.connect(self._save_ocr_config)
@@ -2239,6 +2326,10 @@ class MeterApp(QMainWindow):
         self.ocr_phys_max_spin.setDecimals(1)
         self.ocr_phys_max_spin.setValue(self.shared_config.get("ocr_phys_max_spin", 199.9))
         self.ocr_phys_max_spin.valueChanged.connect(self._save_ocr_config)
+        
+        self.ocr_enforce_dev_chk = QCheckBox("Limit Max Frame-to-Frame Dev (%):")
+        self.ocr_enforce_dev_chk.setChecked(self.shared_config.get("ocr_enforce_dev_chk", False))
+        self.ocr_enforce_dev_chk.stateChanged.connect(self._save_ocr_config)
         
         self.ocr_max_dev_spin = QSpinBox()
         self.ocr_max_dev_spin.setRange(1, 1000)
@@ -2305,21 +2396,51 @@ class MeterApp(QMainWindow):
         self.setCentralWidget(self.tabs)
         
         # Add Global Status Bar
-        self.status_m1 = QLabel("M1: Disconnected")
-        self.status_m2 = QLabel("M2: Disconnected")
-        self.status_cam = QLabel("Camera: Off")
+        self.status_m1 = QPushButton("🔌 M1: Disconnected")
+        self.status_m2 = QPushButton("🔌 M2: Disconnected")
+        self.status_cam = QPushButton("🎥 Camera: Off")
         
         # Style status labels
-        self.status_m1.setStyleSheet("color: gray; font-weight: bold; margin-right: 20px;")
-        self.status_m2.setStyleSheet("color: gray; font-weight: bold; margin-right: 20px;")
-        self.status_cam.setStyleSheet("color: gray; font-weight: bold; margin-right: 20px;")
+        self.status_m1.setStyleSheet("color: gray; font-weight: bold; margin-right: 5px; padding: 3px;")
+        self.status_m2.setStyleSheet("color: gray; font-weight: bold; margin-right: 20px; padding: 3px;")
+        self.status_cam.setStyleSheet("color: gray; font-weight: bold; margin-right: 20px; padding: 3px;")
         
         self.statusBar().addWidget(self.status_m1)
         self.statusBar().addWidget(self.status_m2)
         self.statusBar().addWidget(self.status_cam)
+        self.status_cam.clicked.connect(self.ocr_checkbox.toggle)
+        
+        # Add OCR controls to status bar
+        self.statusBar().addPermanentWidget(self.ocr_autolog_checkbox)
+        
+        lbl_rate = QLabel(" OCR Sampling Rate (s): ")
+        lbl_rate.setStyleSheet("font-weight: bold; margin-left: 20px;")
+        self.statusBar().addPermanentWidget(lbl_rate)
+        
+        self.ocr_interval_spin = QDoubleSpinBox()
+        self.ocr_interval_spin.setRange(1.0, 60.0)
+        self.ocr_interval_spin.setDecimals(2)
+        self.ocr_interval_spin.setSingleStep(0.1)
+        
+        default_interval = self.shared_config.get("ocr_interval", 1.0)
+        if hasattr(self, 'ocr_pipeline'):
+            self.ocr_pipeline.ocr_interval = default_interval
+        self.ocr_interval_spin.setValue(default_interval)
+        
+        def on_ocr_interval_changed(val):
+            if hasattr(self, 'ocr_pipeline'):
+                self.ocr_pipeline.ocr_interval = val
+            self.shared_config["ocr_interval"] = val
+            self._save_ocr_config()
+            
+        self.ocr_interval_spin.valueChanged.connect(on_ocr_interval_changed)
+        self.statusBar().addPermanentWidget(self.ocr_interval_spin)
         
         self.meter1 = MeterController(meter_id=1, parent_app=self)
         self.meter2 = MeterController(meter_id=2, parent_app=self)
+        
+        self.status_m1.clicked.connect(lambda: self.meter1.btn_connect.click())
+        self.status_m2.clicked.connect(lambda: self.meter2.btn_connect.click())
         
         self.settings_tab = SettingsTab(self)
         
@@ -2394,12 +2515,18 @@ class MeterApp(QMainWindow):
         self.shared_config["ocr_autolog"] = self.ocr_autolog_checkbox.isChecked()
         self.shared_config["ocr_dual_mode"] = self.ocr_dual_mode_chk.isChecked()
         self.shared_config["ocr_discard"] = self.ocr_discard_chk.isChecked()
+        self.shared_config["ocr_midpoint"] = self.ocr_midpoint_chk.isChecked()
+        self.shared_config["ocr_conf"] = self.ocr_conf_spin.value()
         self.shared_config["ocr_enforce_max"] = self.ocr_enforce_max_chk.isChecked()
         self.shared_config["ocr_max_val"] = self.ocr_max_val_spin.value()
         self.shared_config["ocr_max_dev"] = self.ocr_max_dev_spin.value()
         self.shared_config["ocr_burst_count"] = self.spin_burst_count.value()
         self.shared_config["ocr_phys_max_chk"] = self.ocr_phys_max_chk.isChecked()
         self.shared_config["ocr_phys_max_spin"] = self.ocr_phys_max_spin.value()
+        
+        if hasattr(self, 'ocr_pipeline') and self.ocr_pipeline is not None:
+            self.ocr_pipeline.use_midpoint_filter = self.ocr_midpoint_chk.isChecked()
+            self.ocr_pipeline.min_confidence = self.ocr_conf_spin.value()
         try:
             with open(self.config_path, "w") as f:
                 json.dump(self.shared_config, f, indent=4)
@@ -2409,7 +2536,7 @@ class MeterApp(QMainWindow):
         if hasattr(self, 'status_cam'):
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(0, lambda: self.status_cam.setText(text))
-            QTimer.singleShot(0, lambda: self.status_cam.setStyleSheet(f"color: {color}; font-weight: bold; margin-right: 20px;"))
+            QTimer.singleShot(0, lambda: self.status_cam.setStyleSheet(f"color: {color}; font-weight: bold; margin-right: 20px; padding: 3px;"))
 
     def update_meter_status(self, meter_id, is_connected, port=""):
         status_label = self.status_m1 if meter_id == 1 else self.status_m2
@@ -2424,7 +2551,7 @@ class MeterApp(QMainWindow):
         import time
         if state:
             self.ocr_checkbox.setText("🎥 Turn Camera Off")
-            self.set_ocr_status("Camera: Feed Active", "#27ae60")
+            self.set_ocr_status("🎥 Camera: Feed Active", "#27ae60")
             self.meter1.ocr_active = True
             self.meter2.ocr_active = True
             self.ocr_pipeline.start()
@@ -2432,7 +2559,7 @@ class MeterApp(QMainWindow):
         else:
             self.ocr_checkbox.setText("🎥 Turn Camera On")
             self.ocr_pipeline.stop()
-            self.set_ocr_status("OCR: Off", "gray")
+            self.set_ocr_status("🎥 Camera: Off", "gray")
             self.meter1.ocr_active = False
             self.meter2.ocr_active = False
 
@@ -2524,7 +2651,7 @@ class MeterApp(QMainWindow):
             if not possible_ms_values: return 0.0
             best_val = min(possible_ms_values, key=lambda x: abs(x - last_serial_ms))
             
-            if apply_dev_filter:
+            if apply_dev_filter and getattr(self, 'ocr_enforce_dev_chk', None) and self.ocr_enforce_dev_chk.isChecked():
                 max_dev = getattr(self, 'ocr_max_dev_spin', None)
                 dev_thresh = (max_dev.value() / 100.0) if max_dev else 0.5
                 if abs(best_val - last_serial_ms) / last_serial_ms > dev_thresh:
@@ -2564,31 +2691,31 @@ class MeterApp(QMainWindow):
         import datetime
             
         if not getattr(self, 'ocr_running_logged', False):
-            self.set_ocr_status("OCR: Running (1 Hz)", "#27ae60")
+            self.set_ocr_status("🎥 OCR: Running (1 Hz)", "#27ae60")
             self.ocr_running_logged = True
             
         now = datetime.datetime.now()
         dt_str = now.strftime("%Y-%m-%d %H:%M:%S")
         
         if len(readings) > 0 and readings[0] is not None:
-            c1_cnn, c1_cv = readings[0]
+            c1_cnn, c1_cv, c1_conf = readings[0]
             meter1_start = getattr(self.meter1, 'first_serial_time', None)
             if meter1_start is not None and time.time() - meter1_start >= 10:
                 last_ms = getattr(self.meter1, 'last_serial_cond_ms', 0.0)
                 c1 = self._apply_ocr_consensus(c1_cnn, c1_cv, last_ms)
                 if c1 is not None:
-                    row_data1 = (dt_str, "OCR", str(c1*1000), str(c1), "-", "0")
+                    row_data1 = (dt_str, "OCR", f"{c1*1000:.1f}", f"{c1:.3f}", "-", "-", f"{c1_conf*100:.1f}")
                     if self.meter1.is_recording and getattr(self, 'ocr_autolog_checkbox', None) and self.ocr_autolog_checkbox.isChecked():
                         self.meter1.signals.update_tree.emit(now, row_data1)
                 
         if len(readings) > 1 and readings[1] is not None:
-            c2_cnn, c2_cv = readings[1]
+            c2_cnn, c2_cv, c2_conf = readings[1]
             meter2_start = getattr(self.meter2, 'first_serial_time', None)
             if meter2_start is not None and time.time() - meter2_start >= 10:
                 last_ms = getattr(self.meter2, 'last_serial_cond_ms', 0.0)
                 c2 = self._apply_ocr_consensus(c2_cnn, c2_cv, last_ms)
                 if c2 is not None:
-                    row_data2 = (dt_str, "OCR", str(c2*1000), str(c2), "-", "0")
+                    row_data2 = (dt_str, "OCR", f"{c2*1000:.1f}", f"{c2:.3f}", "-", "-", f"{c2_conf*100:.1f}")
                     if self.meter2.is_recording and getattr(self, 'ocr_autolog_checkbox', None) and self.ocr_autolog_checkbox.isChecked():
                         self.meter2.signals.update_tree.emit(now, row_data2)
 

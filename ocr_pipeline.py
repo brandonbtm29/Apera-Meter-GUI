@@ -9,7 +9,7 @@ try:
     import torch
     import torchvision.transforms as transforms
     from PIL import Image
-    from ocr_model import MeterCNN, tensor_to_string
+    from ocr_model import MeterCRNN
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -27,6 +27,8 @@ class MeterOCR:
             "m1_cond": None,
             "m2_cond": None
         }
+        self.use_midpoint_filter = True
+        self.min_confidence = 0.0
         self.load_rois()
         
         self.model = None
@@ -36,12 +38,12 @@ class MeterOCR:
             torch.set_num_threads(1)  # Prevent PyTorch from using all CPU cores and starving the serial thread
             try:
                 self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-                self.model = MeterCNN().to(self.device)
+                self.model = MeterCRNN().to(self.device)
                 if os.path.exists("meter_ocr_model.pt"):
                     self.model.load_state_dict(torch.load("meter_ocr_model.pt", map_location=self.device, weights_only=True))
                     self.model.eval()
                     self.transform = transforms.Compose([
-                        transforms.Resize((128, 128)),
+                        transforms.Resize((64, 256)),
                         transforms.ToTensor(),
                         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
                     ])
@@ -121,8 +123,53 @@ class MeterOCR:
         if self.cap:
             self.cap.release()
 
+    def _calculate_midpoint(self, vals, use_filter=True):
+        if not vals: return (0.0, 0.0, 0.0)
+        
+        # Ensure all elements have length 3
+        normalized_vals = []
+        for v in vals:
+            if len(v) == 2: normalized_vals.append((v[0], v[1], 0.0))
+            else: normalized_vals.append(v)
+            
+        if len(normalized_vals) == 1: return normalized_vals[0]
+        
+        # If disabled, just return the most recent reading (the last one in the buffer)
+        if not use_filter:
+            return normalized_vals[-1]
+            
+        if len(normalized_vals) == 2: 
+            return ((normalized_vals[0][0] + normalized_vals[1][0])/2.0, 
+                    (normalized_vals[0][1] + normalized_vals[1][1])/2.0,
+                    (normalized_vals[0][2] + normalized_vals[1][2])/2.0)
+            
+        def get_mid(idx):
+            arr = [v[idx] for v in normalized_vals if v[idx] != 0.0]
+            if len(arr) < 2: return arr[-1] if arr else 0.0
+            
+            min_diff = float('inf')
+            best_pair = (arr[-1], arr[-1]) # Default to most recent
+            for i in range(len(arr)):
+                for j in range(i+1, len(arr)):
+                    diff = abs(arr[i] - arr[j])
+                    if diff < min_diff:
+                        min_diff = diff
+                        best_pair = (arr[i], arr[j])
+            return (best_pair[0] + best_pair[1]) / 2.0
+            
+        def get_conf():
+            confs = [v[2] for v in normalized_vals if v[0] != 0.0]
+            if not confs: return 0.0
+            return sum(confs) / len(confs)
+            
+        return (get_mid(0), get_mid(1), get_conf())
+
     def _loop(self):
         last_process = 0
+        last_emit = 0
+        oversample_buffer_m1 = []
+        oversample_buffer_m2 = []
+        
         while self.is_running:
             ret, frame = self.cap.read()
             if not ret:
@@ -144,9 +191,13 @@ class MeterOCR:
                 else:
                     cv2.rectangle(display_frame, (meta['x1'], meta['y1']), (meta['x1']+meta['w1'], meta['y1']+meta['h1']), color, 4)
                 
-                val_tuple = self.last_parsed_vals.get(name, (0.0, 0.0))
+                val_tuple = self.last_parsed_vals.get(name, (0.0, 0.0, 0.0))
+                conf = 0.0
                 if isinstance(val_tuple, tuple):
-                    v_cnn, v_cv = val_tuple
+                    if len(val_tuple) == 3:
+                        v_cnn, v_cv, conf = val_tuple
+                    else:
+                        v_cnn, v_cv = val_tuple
                     val = v_cnn if v_cnn != 0.0 else v_cv
                 else:
                     val = val_tuple
@@ -163,11 +214,38 @@ class MeterOCR:
                 if now - last_inf < 0.3: # Flash for 300ms
                     cv2.circle(display_frame, (max(10, meta['draw_x'] - 20), max(20, meta['draw_y'] - 15)), 10, (0, 255, 0), -1)
                 
-            if now - last_process >= self.ocr_interval:
-                # Do inference on the un-drawn frame
-                self.process_frame(frame)
+            if now - last_process >= (self.ocr_interval / 3.0):
+                # Do inference on the un-drawn frame (3x oversampling)
+                raw_roi_imgs = self.process_frame(frame)
                 last_process = now
                 self.last_inference_time = now
+                
+                m1 = self.last_parsed_vals.get("m1_cond", (0.0, 0.0))
+                m2 = self.last_parsed_vals.get("m2_cond", (0.0, 0.0))
+                oversample_buffer_m1.append(m1)
+                oversample_buffer_m2.append(m2)
+                
+            if now - last_emit >= self.ocr_interval:
+                if len(oversample_buffer_m1) > 0:
+                    use_filter = getattr(self, 'use_midpoint_filter', True)
+                    final_m1 = self._calculate_midpoint(oversample_buffer_m1, use_filter)
+                    final_m2 = self._calculate_midpoint(oversample_buffer_m2, use_filter)
+                    oversample_buffer_m1.clear()
+                    oversample_buffer_m2.clear()
+                    
+                    readings = [final_m1, final_m2]
+                    raw_roi_imgs, _ = self.extract_crops(frame)
+                    
+                    for cb in self.callbacks:
+                        try:
+                            import inspect
+                            sig = inspect.signature(cb)
+                            if len(sig.parameters) == 2:
+                                cb(readings, raw_roi_imgs)
+                            else:
+                                cb(readings)
+                        except: pass
+                last_emit = now
                 
             for cb in self.frame_callbacks:
                 try: cb(display_frame.copy(), roi_imgs)
@@ -273,45 +351,33 @@ class MeterOCR:
         
         for name, roi_img in roi_imgs.items():
             if roi_img.size == 0:
-                parsed_vals[name] = (0.0, 0.0)
+                parsed_vals[name] = (0.0, 0.0, 0.0)
                 continue
                 
             val_cv = self.parse_7segment(roi_img)
             val_cnn = 0.0
+            conf_cnn = 0.0
             
             if self.model and self.transform:
                 try:
-                    val_cnn = self.predict_cnn(roi_img)
+                    val_cnn, conf_cnn = self.predict_cnn(roi_img)
                 except Exception as e:
                     print(f"CNN Error: {e}")
                     val_cnn = val_cv
             else:
                 val_cnn = val_cv
                 
-            parsed_vals[name] = (val_cnn, val_cv)
+            parsed_vals[name] = (val_cnn, val_cv, conf_cnn)
             
         if not hasattr(self, "last_parsed_vals"):
             self.last_parsed_vals = {}
         self.last_parsed_vals.update(parsed_vals)
-            
-        readings[0] = parsed_vals.get("m1_cond", (0.0, 0.0))
-        readings[1] = parsed_vals.get("m2_cond", (0.0, 0.0))
         
-        # Emit to callbacks
-        for cb in self.callbacks:
-            try:
-                # We can use introspection or just pass it since we control meter_app
-                import inspect
-                sig = inspect.signature(cb)
-                if len(sig.parameters) == 2:
-                    cb(readings, roi_imgs)
-                else:
-                    cb(readings)
-            except: pass
+        return roi_imgs
 
     def predict_cnn(self, roi_img):
         if not HAS_TORCH or self.model is None or self.transform is None:
-            return 0.0
+            return 0.0, 0.0
             
         # Convert BGR OpenCV image to PIL RGB
         rgb_img = cv2.cvtColor(roi_img, cv2.COLOR_BGR2RGB)
@@ -321,23 +387,40 @@ class MeterOCR:
         input_tensor = self.transform(pil_img).unsqueeze(0).to(self.device) # Add batch dim
         
         with torch.no_grad():
-            output = self.model(input_tensor) # [1, 7, 12]
+            output = self.model(input_tensor) # [16, 1, 11]
             
-        # Get argmax over classes (dim=2)
-        preds = torch.argmax(output, dim=2)[0] # [7]
+        # Get argmax over classes (dim=2) for the single batch item
+        probs = torch.softmax(output[:, 0, :], dim=1) # [16, 12]
+        preds = torch.argmax(probs, dim=1) # [16]
         
-        # Convert to string
-        pred_str = tensor_to_string(preds)
+        # CTC Decode
+        CHARS = "0123456789."
+        PAD_IDX = 11
+        pred_str = ""
+        prev_char = -1
+        char_probs = []
+        for i, p in enumerate(preds):
+            p = p.item()
+            if p != PAD_IDX and p != prev_char:
+                pred_str += CHARS[p]
+                char_probs.append(probs[i, p].item())
+            prev_char = p
+            
+        # Check confidence
+        avg_conf = sum(char_probs) / len(char_probs) if char_probs else 0.0
+        min_conf = getattr(self, 'min_confidence', 0.0)
+        if min_conf > 0.0 and avg_conf < min_conf:
+            return 0.0, avg_conf
         
         # Try converting to float
         try:
             # Remove any trailing invalid chars or extra dots
             pred_str = pred_str.strip()
             if not pred_str:
-                return 0.0
-            return float(pred_str)
+                return 0.0, avg_conf
+            return float(pred_str), avg_conf
         except ValueError:
-            return 0.0
+            return 0.0, avg_conf
 
     def parse_7segment(self, roi):
         # Crop the border
