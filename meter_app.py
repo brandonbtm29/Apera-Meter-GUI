@@ -14,12 +14,25 @@ import math
 import threading
 import requests
 import datetime
-import struct
 import csv
 import json
 import openpyxl
 from openpyxl.styles import Font, Alignment
 import pandas as pd
+import serial
+import serial.tools.list_ports
+import time
+import threading
+import datetime
+import struct
+import requests
+
+# Import torch/ocr before QApplication is created to prevent OpenMP/MKL deadlocks on Windows
+try:
+    import torch
+    from ocr_pipeline import MeterOCR
+except ImportError:
+    pass
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -27,7 +40,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QLineEdit, QComboBox, QTextEdit, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QFileDialog, QInputDialog,
     QFormLayout, QFrame, QDialog, QGroupBox, QGridLayout, QListWidget, QStackedWidget,
-    QButtonGroup, QRadioButton, QSpinBox
+    QButtonGroup, QRadioButton, QSpinBox, QDoubleSpinBox
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QColor, QAction
@@ -296,6 +309,16 @@ class MeterController(QWidget):
         left_layout.addWidget(self.gb_axis)
         
 
+        self.gb_syslog = CollapsibleBox("System Log Events")
+        l_syslog = QVBoxLayout()
+        self.txt_system_log = QTextEdit()
+        self.txt_system_log.setMinimumHeight(150)
+        self.txt_system_log.setReadOnly(True)
+        self.txt_system_log.setStyleSheet("background-color: #1e1e1e; color: #00ff00; font-family: Consolas; font-size: 11px;")
+        l_syslog.addWidget(self.txt_system_log)
+        self.gb_syslog.setLayout(l_syslog)
+        left_layout.addWidget(self.gb_syslog)
+
         left_layout.addStretch()
         
         left_scroll = QScrollArea()
@@ -332,27 +355,29 @@ class MeterController(QWidget):
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(10, 10, 10, 10)
         
+        self.gb_connection = CollapsibleBox("Connection Details")
+        l_conn = QVBoxLayout()
+        
         self.sn_label = QLabel("SN: Unknown")
         self.model_label = QLabel("Model: Unknown")
         self.sn_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
         self.model_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-        right_layout.addWidget(self.sn_label)
-        right_layout.addWidget(self.model_label)
-
-        lbl_conn = QLabel("Connection")
-        lbl_conn.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        right_layout.addWidget(lbl_conn)
+        l_conn.addWidget(self.sn_label)
+        l_conn.addWidget(self.model_label)
         
         self.port_combo = QComboBox()
-        right_layout.addWidget(self.port_combo)
+        l_conn.addWidget(self.port_combo)
         
         self.btn_refresh = QPushButton("🔄 Refresh Ports")
         self.btn_refresh.clicked.connect(self.refresh_ports)
-        right_layout.addWidget(self.btn_refresh)
+        l_conn.addWidget(self.btn_refresh)
         
         self.btn_connect = QPushButton("🔌 Connect")
         self.btn_connect.clicked.connect(self.toggle_connection)
-        right_layout.addWidget(self.btn_connect)
+        l_conn.addWidget(self.btn_connect)
+        
+        self.gb_connection.setLayout(l_conn)
+        right_layout.addWidget(self.gb_connection)
 
         # Metadata Tokens
         self.gb_tokens = CollapsibleBox("Metadata Tokens")
@@ -655,6 +680,8 @@ class MeterController(QWidget):
         return s
 
     def toggle_record(self, checked=False):
+        import datetime
+        now_str = datetime.datetime.now().strftime("%H:%M:%S")
         if not self.is_recording:
             self.is_recording = True
             self.session_start_time = None
@@ -663,15 +690,17 @@ class MeterController(QWidget):
             self.btn_record.setStyleSheet("background-color: #e74c3c; color: white;")
             self.set_status("Recording...", "gray")
             self.unsaved_changes = True
+            self.txt_system_log.append(f"[{now_str}] ⏺ Recording Session Started.")
         else:
             self.is_recording = False
             self.btn_record.setText("⏺ Start Recording")
             self.btn_record.setStyleSheet("background-color: #2ecc71; color: white;")
             self.set_status("Paused", "gray")
+            self.txt_system_log.append(f"[{now_str}] ⏸ Recording Session Paused.")
             
             if self.combo_autosave.currentText() == "Every X Minutes":
-                self.save_excel(auto=True)
-                self.txt_notes.append("[Auto-Save] Data saved to directory automatically upon pause.")
+                self.save_excel(auto=True, is_background_autosave=True)
+                self.txt_system_log.append(f"[{now_str}] [Auto-Save] Data saved to directory automatically upon pause.")
             self.ax.set_title(f"Live (Not Recording): Conductivity (Meter {self.meter_id})")
         self.canvas.draw_idle()
 
@@ -781,15 +810,16 @@ class MeterController(QWidget):
                         ts = row[0]
                         dur = float(row[1])
                         
-                        if current_session is None or dur < last_dur:
+                        if current_session is None or (dur < last_dur - 0.5) or (dur < last_dur and dur < 0.1):
                             if current_session:
                                 current_session["end_idx"] = idx - 1
                                 sessions.append(current_session)
                             current_session = {"start_idx": idx, "start_ts": ts, "end_ts": ts, "points": 0}
+                            last_dur = dur
                             
                         current_session["end_ts"] = ts
                         current_session["points"] += 1
-                        last_dur = dur
+                        last_dur = max(last_dur, dur)
                     except: pass
                     
             if current_session:
@@ -1002,6 +1032,10 @@ class MeterController(QWidget):
             self.config[f"default_com_port_{self.meter_id}"] = port
             self.save_config()
             
+            import datetime
+            now_str = datetime.datetime.now().strftime("%H:%M:%S")
+            self.txt_system_log.append(f"[{now_str}] 🔌 Connected to {port}.")
+            
             self.ser.write(b"&OK#\r\n")
             if self.app_controller and self.app_controller.shared_config.get("global_auto_sync", False):
                 QTimer.singleShot(500, self.sync_time)
@@ -1031,6 +1065,12 @@ class MeterController(QWidget):
         self.btn_sync.setEnabled(False)
         self.sn_label.setText("SN: Unknown")
         self.model_label.setText("Model: Unknown")
+        if self.parent_app:
+            self.parent_app.update_meter_status(self.meter_id, False)
+        
+        import datetime
+        now_str = datetime.datetime.now().strftime("%H:%M:%S")
+        self.txt_system_log.append(f"[{now_str}] 🔌 Disconnected.")
 
     def read_serial_loop(self):
         buffer = b""
@@ -1425,7 +1465,7 @@ class MeterController(QWidget):
                     elapsed_min = durations[-1]
                     last_autosave = getattr(self, 'last_autosave_min', 0.0)
                     if (elapsed_min - last_autosave) >= autosave_interval:
-                        self.save_excel(auto=True)
+                        self.save_excel(auto=True, is_background_autosave=True)
                         self.last_autosave_min = elapsed_min
 
             if is_duration:
@@ -1523,7 +1563,7 @@ class MeterController(QWidget):
         self.btn_download.setEnabled(False)
         self.ser.write(b"&WA#\r\n")
 
-    def save_excel(self, auto=False):
+    def save_excel(self, auto=False, is_background_autosave=False):
         if self.table.rowCount() == 0:
             if not auto: QMessageBox.information(self, "Export", "No data to export.")
             return
@@ -1555,7 +1595,24 @@ class MeterController(QWidget):
                 row_data = []
                 for col in range(self.table.columnCount()):
                     item = self.table.item(row, col)
-                    row_data.append(item.text() if item else "")
+                    if item:
+                        text = item.text()
+                        
+                        # Remove (Manual) from DateTime column
+                        if col == 0 and " (Manual)" in text:
+                            text = text.replace(" (Manual)", "")
+                            
+                        # Convert to number so Excel recognizes it
+                        try:
+                            if '.' in text:
+                                val = float(text)
+                            else:
+                                val = int(text)
+                            row_data.append(val)
+                        except ValueError:
+                            row_data.append(text)
+                    else:
+                        row_data.append("")
                 data.append(row_data)
             
             df = pd.DataFrame(data, columns=self.columns)
@@ -1581,7 +1638,15 @@ class MeterController(QWidget):
             if hasattr(self, 'token_inputs'):
                 for name, ent in self.token_inputs.items():
                     doc_ws.cell(row=current_row, column=1, value=name + ":")
-                    doc_ws.cell(row=current_row, column=2, value=ent.text())
+                    token_text = ent.text().strip()
+                    try:
+                        if '.' in token_text:
+                            token_val = float(token_text)
+                        else:
+                            token_val = int(token_text)
+                    except ValueError:
+                        token_val = token_text
+                    doc_ws.cell(row=current_row, column=2, value=token_val)
                     current_row += 1
                     
             current_row += 1
@@ -1598,6 +1663,10 @@ class MeterController(QWidget):
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(3000, lambda: self.set_status("Receiving Data..." if getattr(self, 'is_recording', False) else "Connected", "#27ae60"))
             self.unsaved_changes = False
+            
+            # Show success prompt as requested by user
+            if not is_background_autosave:
+                QMessageBox.information(self, "Save Successful", f"File successfully saved to:\n{filepath}")
         except Exception as e:
             try:
                 with open(os.path.expanduser("~/autosave_error.log"), "a") as f:
@@ -2439,8 +2508,8 @@ class MeterApp(QMainWindow):
         self.meter1 = MeterController(meter_id=1, parent_app=self)
         self.meter2 = MeterController(meter_id=2, parent_app=self)
         
-        self.status_m1.clicked.connect(lambda: self.meter1.btn_connect.click())
-        self.status_m2.clicked.connect(lambda: self.meter2.btn_connect.click())
+        self.status_m1.clicked.connect(self.meter1.toggle_connection)
+        self.status_m2.clicked.connect(self.meter2.toggle_connection)
         
         self.settings_tab = SettingsTab(self)
         
@@ -2621,7 +2690,15 @@ class MeterApp(QMainWindow):
         def _get_best_permutation(ocr_val, apply_dev_filter=True):
             if ocr_val == 0.0 or last_serial_ms == 0.0 or last_serial_ms is None:
                 return ocr_val
-            raw_str = str(ocr_val).replace('.', '')
+                
+            # Python's float() adds an artificial '.0' to whole numbers (e.g., 530 -> 530.0).
+            # If we blindly strip the decimal, 530.0 becomes 5300, which is 10x larger and 
+            # falsely triggers the max value limit (1999), causing the correct CNN reading to be thrown out!
+            ocr_str = str(ocr_val)
+            if ocr_str.endswith('.0'):
+                ocr_str = ocr_str[:-2]
+                
+            raw_str = ocr_str.replace('.', '')
             try: raw_int = int(raw_str)
             except: return 0.0
             if raw_int == 0: return 0.0
@@ -2629,26 +2706,15 @@ class MeterApp(QMainWindow):
             if getattr(self, 'ocr_enforce_max_chk', None) and self.ocr_enforce_max_chk.isChecked():
                 limit_spin = getattr(self, 'ocr_max_val_spin', None)
                 limit_val = limit_spin.value() if limit_spin else 1999
-                limit_len = len(str(limit_val))
                 if raw_int > limit_val:
-                    try: raw_int = int(str(raw_int)[:limit_len])
-                    except: pass
-                    if raw_int > limit_val: return 0.0
+                    return 0.0
                     
-            raw_str = str(raw_int)
-            possible_ms_values = []
-            for i in range(len(raw_str) + 1):
-                s = "0." + raw_str if i == 0 else raw_str if i == len(raw_str) else raw_str[:i] + "." + raw_str[i:]
-                try: possible_ms_values.append(float(s))
-                except: pass
-                
-            # Allow leading zeros for uS values (e.g. 145 -> 0.0145 mS)
-            for z in range(1, 4):
-                s = "0." + ("0" * z) + raw_str
-                try: possible_ms_values.append(float(s))
-                except: pass
+            # Since the CNN perfectly predicts the decimal point, we no longer need to generate all decimal permutations.
+            # The only ambiguity is the UNIT on the LCD screen (mS vs uS).
+            # The true conductivity in mS is either the literal value (if LCD is showing mS) 
+            # or value / 1000 (if LCD is showing uS).
+            possible_ms_values = [ocr_val, ocr_val / 1000.0]
             
-            if not possible_ms_values: return 0.0
             best_val = min(possible_ms_values, key=lambda x: abs(x - last_serial_ms))
             
             if apply_dev_filter and getattr(self, 'ocr_enforce_dev_chk', None) and self.ocr_enforce_dev_chk.isChecked():
@@ -2659,23 +2725,23 @@ class MeterApp(QMainWindow):
             return best_val
             
         cnn_best = _get_best_permutation(val_cnn, True)
-        cv_best = _get_best_permutation(val_cv, True)
         
         dual_mode = getattr(self, 'ocr_dual_mode_chk', None) and self.ocr_dual_mode_chk.isChecked()
         discard_bad = getattr(self, 'ocr_discard_chk', None) and self.ocr_discard_chk.isChecked()
         
         if dual_mode:
-            if cnn_best != 0.0 and cv_best != 0.0: final_val = cnn_best
-            elif cnn_best != 0.0: final_val = cnn_best
-            elif cv_best != 0.0: final_val = cv_best
-            else: final_val = 0.0
-        else:
+            cv_best = _get_best_permutation(val_cv, True)
             final_val = cnn_best if cnn_best != 0.0 else cv_best
+        else:
+            final_val = cnn_best
             
         if final_val == 0.0 and not discard_bad:
             cnn_raw = _get_best_permutation(val_cnn, False)
-            cv_raw = _get_best_permutation(val_cv, False)
-            result = cnn_raw if cnn_raw != 0.0 else cv_raw
+            if dual_mode:
+                cv_raw = _get_best_permutation(val_cv, False)
+                result = cnn_raw if cnn_raw != 0.0 else cv_raw
+            else:
+                result = cnn_raw if cnn_raw != 0.0 else None
         else:
             result = final_val if final_val != 0.0 else None
             
@@ -2699,6 +2765,9 @@ class MeterApp(QMainWindow):
         
         if len(readings) > 0 and readings[0] is not None:
             c1_cnn, c1_cv, c1_conf = readings[0]
+            min_conf = getattr(self.ocr_pipeline, 'min_confidence', 0.0) if hasattr(self, 'ocr_pipeline') else 0.0
+            if min_conf > 0.0 and c1_conf < min_conf: c1_cnn = 0.0
+            
             meter1_start = getattr(self.meter1, 'first_serial_time', None)
             if meter1_start is not None and time.time() - meter1_start >= 10:
                 last_ms = getattr(self.meter1, 'last_serial_cond_ms', 0.0)
@@ -2710,6 +2779,8 @@ class MeterApp(QMainWindow):
                 
         if len(readings) > 1 and readings[1] is not None:
             c2_cnn, c2_cv, c2_conf = readings[1]
+            if min_conf > 0.0 and c2_conf < min_conf: c2_cnn = 0.0
+            
             meter2_start = getattr(self.meter2, 'first_serial_time', None)
             if meter2_start is not None and time.time() - meter2_start >= 10:
                 last_ms = getattr(self.meter2, 'last_serial_cond_ms', 0.0)

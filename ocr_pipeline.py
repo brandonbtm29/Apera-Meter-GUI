@@ -40,12 +40,12 @@ class MeterOCR:
                 self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
                 self.model = MeterCRNN().to(self.device)
                 if os.path.exists("meter_ocr_model.pt"):
-                    self.model.load_state_dict(torch.load("meter_ocr_model.pt", map_location=self.device, weights_only=True))
+                    self.model.load_state_dict(torch.load("meter_ocr_model.pt", map_location=self.device, weights_only=False))
                     self.model.eval()
                     self.transform = transforms.Compose([
-                        transforms.Resize((128, 256)),
+                        transforms.Resize((64, 256)),
                         transforms.ToTensor(),
-                        transforms.Normalize((0.5,), (0.5,))
+                        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
                     ])
                     print("CNN Model loaded successfully.")
                 else:
@@ -138,11 +138,6 @@ class MeterOCR:
         if not use_filter:
             return normalized_vals[-1]
             
-        if len(normalized_vals) == 2: 
-            return ((normalized_vals[0][0] + normalized_vals[1][0])/2.0, 
-                    (normalized_vals[0][1] + normalized_vals[1][1])/2.0,
-                    (normalized_vals[0][2] + normalized_vals[1][2])/2.0)
-            
         def get_mid(idx):
             arr = [v[idx] for v in normalized_vals if v[idx] != 0.0]
             if len(arr) < 2: return arr[-1] if arr else 0.0
@@ -151,10 +146,23 @@ class MeterOCR:
             best_pair = (arr[-1], arr[-1]) # Default to most recent
             for i in range(len(arr)):
                 for j in range(i+1, len(arr)):
-                    diff = abs(arr[i] - arr[j])
+                    # Compare digits ignoring decimal point placement
+                    try:
+                        s_i = float(str(arr[i]).replace('.', ''))
+                        s_j = float(str(arr[j]).replace('.', ''))
+                    except:
+                        s_i, s_j = arr[i], arr[j]
+                        
+                    diff = abs(s_i - s_j)
                     if diff < min_diff:
                         min_diff = diff
                         best_pair = (arr[i], arr[j])
+            
+            # If the best pair has vastly different magnitudes (e.g. 529 vs 52.9),
+            # don't average them into nonsense (like 290.95). Just pick the most recent one.
+            if abs(best_pair[0] - best_pair[1]) > (abs(best_pair[0]) * 0.5):
+                return best_pair[1]
+                
             return (best_pair[0] + best_pair[1]) / 2.0
             
         def get_conf():
@@ -379,6 +387,11 @@ class MeterOCR:
         if not HAS_TORCH or self.model is None or self.transform is None:
             return 0.0, 0.0
             
+        # The model was trained on images that were first resized to 128x128 by cv2
+        # (see calibration burst logic in meter_app.py), so we must replicate that
+        # identical interpolation step here before passing to PIL and torchvision.
+        roi_img = cv2.resize(roi_img, (128, 128))
+            
         # Convert BGR OpenCV image to PIL RGB
         rgb_img = cv2.cvtColor(roi_img, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(rgb_img)
@@ -387,11 +400,12 @@ class MeterOCR:
         input_tensor = self.transform(pil_img).unsqueeze(0).to(self.device) # Add batch dim
         
         with torch.no_grad():
-            output = self.model(input_tensor) # [16, 1, 11]
+            output = self.model(input_tensor) # [32, 1, 12]
             
         # Get argmax over classes (dim=2) for the single batch item
-        probs = torch.softmax(output[:, 0, :], dim=1) # [16, 12]
-        preds = torch.argmax(probs, dim=1) # [16]
+        # output is log_softmax, so use exp to get probabilities
+        probs = torch.exp(output[:, 0, :]) # [32, 12]
+        preds = torch.argmax(probs, dim=1) # [32]
         
         # CTC Decode
         CHARS = "0123456789."
@@ -399,26 +413,43 @@ class MeterOCR:
         pred_str = ""
         prev_char = -1
         char_probs = []
+        current_char_prob = 0.0
+        
         for i, p in enumerate(preds):
             p = p.item()
-            if p != PAD_IDX and p != prev_char:
-                pred_str += CHARS[p]
-                char_probs.append(probs[i, p].item())
+            prob = probs[i, p].item()
+            
+            if p != PAD_IDX:
+                if p != prev_char:
+                    if prev_char != -1 and prev_char != PAD_IDX:
+                        char_probs.append(current_char_prob)
+                    pred_str += CHARS[p]
+                    current_char_prob = prob
+                else:
+                    current_char_prob = max(current_char_prob, prob)
+            else:
+                if prev_char != -1 and prev_char != PAD_IDX:
+                    char_probs.append(current_char_prob)
             prev_char = p
+            
+        if prev_char != -1 and prev_char != PAD_IDX:
+            char_probs.append(current_char_prob)
             
         # Check confidence
         avg_conf = sum(char_probs) / len(char_probs) if char_probs else 0.0
-        min_conf = getattr(self, 'min_confidence', 0.0)
-        if min_conf > 0.0 and avg_conf < min_conf:
-            return 0.0, avg_conf
-        
-        # Try converting to float
+            
+        # Sanitize multiple decimal points
+        if pred_str.count('.') > 1:
+            parts = pred_str.split('.')
+            pred_str = parts[0] + '.' + ''.join(parts[1:])
+            
         try:
-            # Remove any trailing invalid chars or extra dots
-            pred_str = pred_str.strip()
-            if not pred_str:
-                return 0.0, avg_conf
-            return float(pred_str), avg_conf
+            val_float = float(pred_str)
+            
+            # The confidence filter should only be enforced by the consensus logic,
+            # not here in the pipeline, otherwise the live camera feed will fall back
+            # to OpenCV visually whenever confidence drops slightly.
+            return val_float, avg_conf
         except ValueError:
             return 0.0, avg_conf
 

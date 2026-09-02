@@ -76,7 +76,7 @@ class MeterCRNN(nn.Module):
         x = x.view(B, C * H, W) # [batch_size, 1024, 32]
         
         # Prepare for LSTM: [batch, channels, width] -> [batch, width, channels]
-        x = x.permute(0, 2, 1) # [batch_size, 32, 1024]
+        x = x.permute(0, 2, 1).contiguous() # [batch_size, 32, 1024]
         
         x = self.dropout(x)
         
