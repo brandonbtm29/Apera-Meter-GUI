@@ -157,7 +157,7 @@ class MeterController(QWidget):
         self.config.setdefault(f"autosave_min_{meter_id}", "5.0")
         self.config.setdefault(f"save_template_{meter_id}", f"Meter_<{meter_id}>_<Date>")
         
-        self.columns = ("DateTime", "Duration (min)", "Mode", "Cond (uS/cm)", "Cond (mS/cm)", "Unit", "Temp (°C)", "OCR Conf (%)")
+        self.columns = ("DateTime", "Duration (min)", "Mode", "Cond (uS/cm)", "Cond (mS/cm)", "Temp (°C)", "OCR Conf (%)")
         self.setup_backup_path()
         self.init_ui()
         
@@ -195,6 +195,12 @@ class MeterController(QWidget):
         self.btn_export.setStyleSheet("background-color: #27ae60; color: white;")
         self.btn_export.clicked.connect(lambda checked=False: self.save_excel(auto=False))
         self.top_btn_layout.addWidget(self.btn_export)
+        
+        self.btn_quick_save_top = QPushButton("⚡ Quick Save")
+        self.btn_quick_save_top.setStyleSheet("background-color: #2980b9; color: white;")
+        self.btn_quick_save_top.setToolTip("Instantly overwrite the target Auto-Save file without prompting.")
+        self.btn_quick_save_top.clicked.connect(lambda checked=False: self.save_excel(auto=True))
+        self.top_btn_layout.addWidget(self.btn_quick_save_top)
         
         self.btn_save_graph = QPushButton("🖼️ Save Graph PNG")
         self.btn_save_graph.clicked.connect(self.save_graph)
@@ -326,7 +332,7 @@ class MeterController(QWidget):
         left_scroll.setWidgetResizable(True)
         
         # Middle Panel (Plot & Table)
-        mid_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.mid_splitter = QSplitter(Qt.Orientation.Vertical)
         
         self.fig, (self.ax, self.ax_temp) = plt.subplots(2, 1, figsize=(5, 5), gridspec_kw={'height_ratios': [3, 1]})
         self.ax.set_title(f"Live Conductivity (Meter {self.meter_id})")
@@ -341,14 +347,14 @@ class MeterController(QWidget):
         self.fig.tight_layout()
         
         self.canvas = FigureCanvasQTAgg(self.fig)
-        mid_splitter.addWidget(self.canvas)
+        self.mid_splitter.addWidget(self.canvas)
         
         self.table = QTableWidget()
         self.table.setColumnCount(len(self.columns))
         self.table.setHorizontalHeaderLabels(self.columns)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.setSortingEnabled(True)
-        mid_splitter.addWidget(self.table)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.mid_splitter.addWidget(self.table)
         
         # Right Panel (Connection & Controls)
         right_widget = QWidget()
@@ -414,6 +420,16 @@ class MeterController(QWidget):
         self.ent_autosave_min.setPlaceholderText("Minutes")
         self.ent_autosave_min.setMinimumWidth(50)
         l_save.addRow("Interval (min):", self.ent_autosave_min)
+
+        self.combo_autostop = QComboBox()
+        self.combo_autostop.addItems(["Off", "Stop Meter", "Stop Camera", "Stop Both"])
+        self.combo_autostop.setCurrentText(self.config.get(f"autostop_mode_{self.meter_id}", "Off"))
+        l_save.addRow("Auto-Stop:", self.combo_autostop)
+        
+        self.ent_autostop_min = QLineEdit(self.config.get(f"autostop_min_{self.meter_id}", "60.0"))
+        self.ent_autostop_min.setPlaceholderText("Minutes")
+        self.ent_autostop_min.setMinimumWidth(50)
+        l_save.addRow("Stop After (min):", self.ent_autostop_min)
         
         btn_layout = QHBoxLayout()
         btn_export = QPushButton("💾 Export As...")
@@ -432,6 +448,11 @@ class MeterController(QWidget):
         self.combo_autosave.currentIndexChanged.connect(self.toggle_autosave_interval)
         self.combo_autosave.currentIndexChanged.connect(self._save_autosave_config)
         self.ent_autosave_min.textChanged.connect(self._save_autosave_config)
+        
+        self.combo_autostop.currentIndexChanged.connect(self.toggle_autosave_interval)
+        self.combo_autostop.currentIndexChanged.connect(self._save_autosave_config)
+        self.ent_autostop_min.textChanged.connect(self._save_autosave_config)
+        
         self.ent_save_template.textChanged.connect(self._save_autosave_config)
         self.toggle_autosave_interval()
         
@@ -470,7 +491,7 @@ class MeterController(QWidget):
         
         # Add to main splitter
         self.main_splitter.addWidget(left_scroll)
-        self.main_splitter.addWidget(mid_splitter)
+        self.main_splitter.addWidget(self.mid_splitter)
         self.main_splitter.addWidget(right_scroll)
         self.main_splitter.setStretchFactor(0, 1)
         self.main_splitter.setStretchFactor(1, 3)
@@ -505,12 +526,15 @@ class MeterController(QWidget):
     def _save_autosave_config(self):
         self.config[f"autosave_mode_{self.meter_id}"] = self.combo_autosave.currentText()
         self.config[f"autosave_min_{self.meter_id}"] = self.ent_autosave_min.text()
+        self.config[f"autostop_mode_{self.meter_id}"] = self.combo_autostop.currentText()
+        self.config[f"autostop_min_{self.meter_id}"] = self.ent_autostop_min.text()
         self.config[f"save_template_{self.meter_id}"] = self.ent_save_template.text()
         self.config[f"save_on_pause_{self.meter_id}"] = getattr(self, 'chk_save_on_pause', QCheckBox()).isChecked()
         self.save_config()
 
     def toggle_autosave_interval(self):
         self.ent_autosave_min.setEnabled(self.combo_autosave.currentText() == "Every X Minutes")
+        self.ent_autostop_min.setEnabled(self.combo_autostop.currentText() != "Off")
 
     def refresh_tokens(self):
         while self.l_tokens.rowCount() > 0:
@@ -792,7 +816,7 @@ class MeterController(QWidget):
         os.makedirs(backup_dir, exist_ok=True)
         self.backup_path = os.path.join(backup_dir, f"Apera_Meter{self.meter_id}_Backup.csv")
 
-    def scan_backup_sessions(self):
+    def scan_backup_sessions(self, gap_minutes=30.0):
         if not os.path.exists(self.backup_path): return []
         sessions = []
         try:
@@ -802,24 +826,32 @@ class MeterController(QWidget):
                 rows = list(reader)
                 
             current_session = None
-            last_dur = -1.0
+            last_ts_obj = None
+            import datetime
             
             for idx, row in enumerate(rows):
                 if len(row) >= 6:
                     try:
-                        ts = row[0]
-                        dur = float(row[1])
+                        ts_str = row[0]
+                        ts_obj = datetime.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
                         
-                        if current_session is None or (dur < last_dur - 0.5) or (dur < last_dur and dur < 0.1):
+                        is_new_session = False
+                        if current_session is None:
+                            is_new_session = True
+                        elif last_ts_obj is not None:
+                            diff_min = (ts_obj - last_ts_obj).total_seconds() / 60.0
+                            if diff_min >= gap_minutes:
+                                is_new_session = True
+                                
+                        if is_new_session:
                             if current_session:
                                 current_session["end_idx"] = idx - 1
                                 sessions.append(current_session)
-                            current_session = {"start_idx": idx, "start_ts": ts, "end_ts": ts, "points": 0}
-                            last_dur = dur
+                            current_session = {"start_idx": idx, "start_ts": ts_str, "end_ts": ts_str, "points": 0}
                             
-                        current_session["end_ts"] = ts
+                        current_session["end_ts"] = ts_str
                         current_session["points"] += 1
-                        last_dur = max(last_dur, dur)
+                        last_ts_obj = ts_obj
                     except: pass
                     
             if current_session:
@@ -829,28 +861,24 @@ class MeterController(QWidget):
         return sessions
 
     def prompt_session_recovery(self, checked=False):
-        sessions = self.scan_backup_sessions()
-        if not sessions: 
-            QMessageBox.information(self, "Recovery", "No recovery sessions found.")
-            return
-            
         dialog = QDialog(self)
         dialog.setWindowTitle("Restore Session")
-        dialog.setMinimumSize(400, 300)
+        dialog.setMinimumSize(450, 350)
         layout = QVBoxLayout(dialog)
+        
+        control_layout = QHBoxLayout()
+        control_layout.addWidget(QLabel("Time Gap to Split Sessions (minutes):"))
+        spin_gap = QDoubleSpinBox()
+        spin_gap.setRange(1.0, 1440.0)
+        spin_gap.setValue(30.0)
+        control_layout.addWidget(spin_gap)
+        layout.addLayout(control_layout)
+        
         layout.addWidget(QLabel("Multiple recording sessions were found. Please select which one to restore:"))
         
         scroll = QScrollArea()
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout(scroll_widget)
-        
-        bg = QButtonGroup(dialog)
-        for i, s in enumerate(sessions):
-            rb = QRadioButton(f"Session {i+1} | {s['start_ts']} -> {s['end_ts']} | {s['points']} pts")
-            if i == len(sessions)-1: rb.setChecked(True)
-            bg.addButton(rb, i)
-            scroll_layout.addWidget(rb)
-            
         scroll_widget.setLayout(scroll_layout)
         scroll.setWidget(scroll_widget)
         scroll.setWidgetResizable(True)
@@ -864,6 +892,45 @@ class MeterController(QWidget):
         btn_layout.addWidget(btn_delete)
         btn_layout.addWidget(btn_ignore)
         layout.addLayout(btn_layout)
+        
+        sessions = []
+        bg = QButtonGroup(dialog)
+        
+        def refresh_sessions():
+            nonlocal sessions
+            for i in reversed(range(scroll_layout.count())):
+                widget = scroll_layout.itemAt(i).widget()
+                if widget is not None:
+                    widget.deleteLater()
+            
+            # Recreate button group to clear old references
+            for btn in bg.buttons():
+                bg.removeButton(btn)
+                
+            gap = spin_gap.value()
+            sessions = self.scan_backup_sessions(gap_minutes=gap)
+            
+            if not sessions:
+                scroll_layout.addWidget(QLabel("No recovery sessions found with current settings."))
+                btn_restore.setEnabled(False)
+                btn_delete.setEnabled(False)
+                return
+                
+            btn_restore.setEnabled(True)
+            btn_delete.setEnabled(True)
+                
+            for i, s in enumerate(sessions):
+                rb = QRadioButton(f"Session {i+1} | {s['start_ts']} -> {s['end_ts']} | {s['points']} pts")
+                if i == len(sessions)-1: rb.setChecked(True)
+                bg.addButton(rb, i)
+                scroll_layout.addWidget(rb)
+                
+        spin_gap.valueChanged.connect(lambda: refresh_sessions())
+        refresh_sessions()
+        
+        if not sessions:
+            QMessageBox.information(self, "Recovery", "No recovery sessions found.")
+            return
         
         def do_restore(checked=False):
             idx = bg.checkedId()
@@ -1213,13 +1280,11 @@ class MeterController(QWidget):
                 dt_obj = datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
                 
                 is_dn_packet = packet.startswith(b'<DN')
-                if is_dn_packet:
-                    dt_str += " (Manual)"
                 
                 if dt_str in self.received_timestamps: return
                 self.received_timestamps.add(dt_str)
                 
-                row_data = (dt_str, mode_str, cond_us, cond_ms, unit_str, f"{temp_c:.1f}")
+                row_data = (dt_str, mode_str, cond_us, cond_ms, f"{temp_c:.1f}")
                 
                 app = self.parent_app
                 is_continuous = getattr(app, 'shared_config', {}).get("dataset_continuous", False)
@@ -1337,10 +1402,10 @@ class MeterController(QWidget):
             
         duration_min = (dt - self.session_start_time).total_seconds() / 60.0
         
-        if len(row_data) == 6:
-            full_row = (row_data[0], f"{duration_min:.2f}", row_data[1], row_data[2], row_data[3], row_data[4], row_data[5], "-")
-        elif len(row_data) == 7:
-            full_row = (row_data[0], f"{duration_min:.2f}", row_data[1], row_data[2], row_data[3], row_data[4], row_data[5], row_data[6])
+        if len(row_data) == 5:
+            full_row = (row_data[0], f"{duration_min:.2f}", row_data[1], row_data[2], row_data[3], row_data[4], "-")
+        elif len(row_data) == 6:
+            full_row = (row_data[0], f"{duration_min:.2f}", row_data[1], row_data[2], row_data[3], row_data[4], row_data[5])
         else:
             full_row = row_data
             
@@ -1348,7 +1413,7 @@ class MeterController(QWidget):
         try: self.plot_conds.append(float(full_row[4]))
         except ValueError: self.plot_conds.append(0.0)
         
-        try: self.plot_temps.append(float(full_row[6]))
+        try: self.plot_temps.append(float(full_row[5]))
         except ValueError: self.plot_temps.append(float('nan'))
         
         self.table.setSortingEnabled(False)
@@ -1467,6 +1532,25 @@ class MeterController(QWidget):
                     if (elapsed_min - last_autosave) >= autosave_interval:
                         self.save_excel(auto=True, is_background_autosave=True)
                         self.last_autosave_min = elapsed_min
+
+            if self.is_recording and hasattr(self, 'combo_autostop') and self.combo_autostop.currentText() != "Off":
+                mode = self.combo_autostop.currentText()
+                try: autostop_interval = float(self.ent_autostop_min.text())
+                except: autostop_interval = 60.0
+                
+                if len(durations) > 0:
+                    elapsed_min = durations[-1]
+                    if elapsed_min >= autostop_interval:
+                        import datetime
+                        now_str = datetime.datetime.now().strftime("%H:%M:%S")
+                        
+                        if mode in ["Stop Meter", "Stop Both"] and getattr(self, 'is_recording', False):
+                            self.toggle_record()
+                            self.txt_system_log.append(f"[{now_str}] ⏱️ Auto-Stop triggered for Meter at {elapsed_min:.1f} minutes.")
+                            
+                        if mode in ["Stop Camera", "Stop Both"] and hasattr(self.parent_app, 'ocr_checkbox') and self.parent_app.ocr_checkbox.isChecked():
+                            self.parent_app.ocr_checkbox.setChecked(False)
+                            self.txt_system_log.append(f"[{now_str}] ⏱️ Auto-Stop triggered for Camera at {elapsed_min:.1f} minutes.")
 
             if is_duration:
                 x_data = durations
@@ -1598,10 +1682,6 @@ class MeterController(QWidget):
                     if item:
                         text = item.text()
                         
-                        # Remove (Manual) from DateTime column
-                        if col == 0 and " (Manual)" in text:
-                            text = text.replace(" (Manual)", "")
-                            
                         # Convert to number so Excel recognizes it
                         try:
                             if '.' in text:
@@ -1635,9 +1715,12 @@ class MeterController(QWidget):
             current_row = 6
             doc_ws.cell(row=current_row, column=1, value="Metadata Tokens").font = Font(bold=True)
             current_row += 1
+            doc_ws.cell(row=current_row, column=1, value="Token Name").font = Font(bold=True, italic=True)
+            doc_ws.cell(row=current_row, column=2, value="Token Value").font = Font(bold=True, italic=True)
+            current_row += 1
             if hasattr(self, 'token_inputs'):
                 for name, ent in self.token_inputs.items():
-                    doc_ws.cell(row=current_row, column=1, value=name + ":")
+                    doc_ws.cell(row=current_row, column=1, value=name)
                     token_text = ent.text().strip()
                     try:
                         if '.' in token_text:
@@ -1657,6 +1740,32 @@ class MeterController(QWidget):
             
             doc_ws.column_dimensions["A"].width = 25
             doc_ws.column_dimensions["B"].width = 35
+            
+            try:
+                from openpyxl.chart import ScatterChart, Reference, Series
+                import openpyxl.chart.axis
+                graph_ws = wb.create_sheet(title="Graph")
+                
+                chart = ScatterChart()
+                chart.title = f"Meter {self.meter_id} Conductivity Over Time"
+                chart.style = 13
+                chart.x_axis.title = "Duration (min)"
+                chart.y_axis.title = "Conductivity (mS/cm)"
+                chart.y_axis.scaling.logBase = 10
+                chart.x_axis.majorGridlines = openpyxl.chart.axis.ChartLines()
+                chart.y_axis.majorGridlines = openpyxl.chart.axis.ChartLines()
+                chart.width = 22
+                chart.height = 12
+                
+                max_row = len(data) + 1
+                if max_row > 1:
+                    xvalues = Reference(data_ws, min_col=2, min_row=2, max_row=max_row)
+                    values = Reference(data_ws, min_col=5, min_row=1, max_row=max_row)
+                    series = Series(values, xvalues, title_from_data=True)
+                    chart.series.append(series)
+                    graph_ws.add_chart(chart, "A1")
+            except Exception as e:
+                print(f"Failed to generate graph sheet: {e}")
             
             wb.save(filepath)
             self.set_status("Exported to Excel!", "#27ae60")
@@ -2511,6 +2620,17 @@ class MeterApp(QMainWindow):
         self.status_m1.clicked.connect(self.meter1.toggle_connection)
         self.status_m2.clicked.connect(self.meter2.toggle_connection)
         
+        # Synchronize splitter positions between both meters so UI layouts match
+        def sync_splitters(pos, index, target_splitter):
+            target_splitter.blockSignals(True)
+            target_splitter.moveSplitter(pos, index)
+            target_splitter.blockSignals(False)
+            
+        self.meter1.main_splitter.splitterMoved.connect(lambda pos, index: sync_splitters(pos, index, self.meter2.main_splitter))
+        self.meter2.main_splitter.splitterMoved.connect(lambda pos, index: sync_splitters(pos, index, self.meter1.main_splitter))
+        
+        self.meter1.mid_splitter.splitterMoved.connect(lambda pos, index: sync_splitters(pos, index, self.meter2.mid_splitter))
+        self.meter2.mid_splitter.splitterMoved.connect(lambda pos, index: sync_splitters(pos, index, self.meter1.mid_splitter))
         self.settings_tab = SettingsTab(self)
         
         from dataset_curation_tab import DatasetCurationTab
@@ -2773,7 +2893,7 @@ class MeterApp(QMainWindow):
                 last_ms = getattr(self.meter1, 'last_serial_cond_ms', 0.0)
                 c1 = self._apply_ocr_consensus(c1_cnn, c1_cv, last_ms)
                 if c1 is not None:
-                    row_data1 = (dt_str, "OCR", f"{c1*1000:.1f}", f"{c1:.3f}", "-", "-", f"{c1_conf*100:.1f}")
+                    row_data1 = (dt_str, "OCR", f"{c1*1000:.1f}", f"{c1:.3f}", "-", f"{c1_conf*100:.1f}")
                     if self.meter1.is_recording and getattr(self, 'ocr_autolog_checkbox', None) and self.ocr_autolog_checkbox.isChecked():
                         self.meter1.signals.update_tree.emit(now, row_data1)
                 
@@ -2786,7 +2906,7 @@ class MeterApp(QMainWindow):
                 last_ms = getattr(self.meter2, 'last_serial_cond_ms', 0.0)
                 c2 = self._apply_ocr_consensus(c2_cnn, c2_cv, last_ms)
                 if c2 is not None:
-                    row_data2 = (dt_str, "OCR", f"{c2*1000:.1f}", f"{c2:.3f}", "-", "-", f"{c2_conf*100:.1f}")
+                    row_data2 = (dt_str, "OCR", f"{c2*1000:.1f}", f"{c2:.3f}", "-", f"{c2_conf*100:.1f}")
                     if self.meter2.is_recording and getattr(self, 'ocr_autolog_checkbox', None) and self.ocr_autolog_checkbox.isChecked():
                         self.meter2.signals.update_tree.emit(now, row_data2)
 
