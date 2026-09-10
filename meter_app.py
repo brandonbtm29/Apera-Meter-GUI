@@ -174,6 +174,16 @@ class MeterController(QWidget):
     def auto_connect_if_valid(self):
         if not hasattr(self, 'serial_worker') or not self.serial_worker:
             self.toggle_connection()
+    def log_event(self, msg):
+        import datetime
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        full_msg = f"[{now_str}] {msg}"
+        current_text = self.txt_system_log.toPlainText()
+        if current_text:
+            self.txt_system_log.setPlainText(full_msg + "\n" + current_text)
+        else:
+            self.txt_system_log.setPlainText(full_msg)
+
     def init_ui(self):
         main_layout = QVBoxLayout(self)
         
@@ -714,17 +724,17 @@ class MeterController(QWidget):
             self.btn_record.setStyleSheet("background-color: #e74c3c; color: white;")
             self.set_status("Recording...", "gray")
             self.unsaved_changes = True
-            self.txt_system_log.append(f"[{now_str}] ⏺ Recording Session Started.")
+            self.log_event("🔴 Recording Session Started.")
         else:
             self.is_recording = False
             self.btn_record.setText("⏺ Start Recording")
             self.btn_record.setStyleSheet("background-color: #2ecc71; color: white;")
             self.set_status("Paused", "gray")
-            self.txt_system_log.append(f"[{now_str}] ⏸ Recording Session Paused.")
+            self.log_event("⏸️ Recording Session Paused.")
             
             if self.combo_autosave.currentText() == "Every X Minutes":
                 self.save_excel(auto=True, is_background_autosave=True)
-                self.txt_system_log.append(f"[{now_str}] [Auto-Save] Data saved to directory automatically upon pause.")
+                self.log_event("[Auto-Save] Data saved to directory automatically upon pause.")
             self.ax.set_title(f"Live (Not Recording): Conductivity (Meter {self.meter_id})")
         self.canvas.draw_idle()
 
@@ -870,8 +880,12 @@ class MeterController(QWidget):
         control_layout.addWidget(QLabel("Time Gap to Split Sessions (minutes):"))
         spin_gap = QDoubleSpinBox()
         spin_gap.setRange(1.0, 1440.0)
-        spin_gap.setValue(30.0)
+        spin_gap.setValue(float(self.config.get(f"recovery_gap_{self.meter_id}", 30.0)))
         control_layout.addWidget(spin_gap)
+        
+        btn_apply_gap = QPushButton("Apply")
+        control_layout.addWidget(btn_apply_gap)
+        
         layout.addLayout(control_layout)
         
         layout.addWidget(QLabel("Multiple recording sessions were found. Please select which one to restore:"))
@@ -908,6 +922,8 @@ class MeterController(QWidget):
                 bg.removeButton(btn)
                 
             gap = spin_gap.value()
+            self.config[f"recovery_gap_{self.meter_id}"] = gap
+            self.save_config()
             sessions = self.scan_backup_sessions(gap_minutes=gap)
             
             if not sessions:
@@ -925,7 +941,7 @@ class MeterController(QWidget):
                 bg.addButton(rb, i)
                 scroll_layout.addWidget(rb)
                 
-        spin_gap.valueChanged.connect(lambda: refresh_sessions())
+        btn_apply_gap.clicked.connect(lambda checked=False: refresh_sessions())
         refresh_sessions()
         
         if not sessions:
@@ -1101,7 +1117,7 @@ class MeterController(QWidget):
             
             import datetime
             now_str = datetime.datetime.now().strftime("%H:%M:%S")
-            self.txt_system_log.append(f"[{now_str}] 🔌 Connected to {port}.")
+            self.log_event(f"🔌 Connected to {port}.")
             
             self.ser.write(b"&OK#\r\n")
             if self.app_controller and self.app_controller.shared_config.get("global_auto_sync", False):
@@ -1137,7 +1153,7 @@ class MeterController(QWidget):
         
         import datetime
         now_str = datetime.datetime.now().strftime("%H:%M:%S")
-        self.txt_system_log.append(f"[{now_str}] 🔌 Disconnected.")
+        self.log_event("❌ Disconnected.")
 
     def read_serial_loop(self):
         buffer = b""
@@ -1546,11 +1562,11 @@ class MeterController(QWidget):
                         
                         if mode in ["Stop Meter", "Stop Both"] and getattr(self, 'is_recording', False):
                             self.toggle_record()
-                            self.txt_system_log.append(f"[{now_str}] ⏱️ Auto-Stop triggered for Meter at {elapsed_min:.1f} minutes.")
+                            self.log_event(f"🛑 Auto-Stop triggered for Meter at {elapsed_min:.1f} minutes.")
                             
                         if mode in ["Stop Camera", "Stop Both"] and hasattr(self.parent_app, 'ocr_checkbox') and self.parent_app.ocr_checkbox.isChecked():
                             self.parent_app.ocr_checkbox.setChecked(False)
-                            self.txt_system_log.append(f"[{now_str}] ⏱️ Auto-Stop triggered for Camera at {elapsed_min:.1f} minutes.")
+                            self.log_event(f"🛑 Auto-Stop triggered for Camera at {elapsed_min:.1f} minutes.")
 
             if is_duration:
                 x_data = durations
@@ -1743,7 +1759,7 @@ class MeterController(QWidget):
             
             try:
                 from openpyxl.chart import ScatterChart, Reference, Series
-                import openpyxl.chart.axis
+                from openpyxl.chart.axis import ChartLines
                 graph_ws = wb.create_sheet(title="Graph")
                 
                 chart = ScatterChart()
@@ -1752,8 +1768,8 @@ class MeterController(QWidget):
                 chart.x_axis.title = "Duration (min)"
                 chart.y_axis.title = "Conductivity (mS/cm)"
                 chart.y_axis.scaling.logBase = 10
-                chart.x_axis.majorGridlines = openpyxl.chart.axis.ChartLines()
-                chart.y_axis.majorGridlines = openpyxl.chart.axis.ChartLines()
+                chart.x_axis.majorGridlines = ChartLines()
+                chart.y_axis.majorGridlines = ChartLines()
                 chart.width = 22
                 chart.height = 12
                 
