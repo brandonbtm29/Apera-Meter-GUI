@@ -215,7 +215,13 @@ class MeterOCR:
                 if display_str.endswith('.0'): 
                     display_str = display_str[:-2]
                     
-                cv2.putText(display_frame, f"{name}: {display_str}", (meta['draw_x'], max(30, meta['draw_y']-10)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                if hasattr(self, 'min_confidence') and self.min_confidence > 0.0 and conf < self.min_confidence:
+                    color = (0, 0, 255) # Red if rejected
+                else:
+                    color = (0, 255, 255) # Yellow if accepted
+                    
+                cv2.putText(display_frame, f"{name}: {display_str}", (meta['draw_x'], max(30, meta['draw_y']-10)), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
                 
                 # Draw measurement indicator
                 last_inf = getattr(self, "last_inference_time", 0)

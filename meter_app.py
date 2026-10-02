@@ -291,17 +291,35 @@ class MeterController(QWidget):
         self.auto_temp_chk.stateChanged.connect(self._auto_chk_changed)
         l_axis.addWidget(self.auto_temp_chk)
         
+        self.auto_deriv_chk = QCheckBox("Auto Deriv")
+        self.auto_deriv_chk.setChecked(self.config.get(f"auto_deriv_{self.meter_id}", True))
+        self.auto_deriv_chk.stateChanged.connect(self._auto_chk_changed)
+        l_axis.addWidget(self.auto_deriv_chk)
+        
         form_layout = QFormLayout()
         self.ent_time_win = QLineEdit(str(self.config.get(f"time_win_{self.meter_id}", "10.0")))
         self.ent_cond_min = QLineEdit(str(self.config.get(f"cond_min_{self.meter_id}", "0")))
         self.ent_cond_max = QLineEdit(str(self.config.get(f"cond_max_{self.meter_id}", "5000")))
         self.ent_temp_min = QLineEdit(str(self.config.get(f"temp_min_{self.meter_id}", "15")))
         self.ent_temp_max = QLineEdit(str(self.config.get(f"temp_max_{self.meter_id}", "35")))
+        self.ent_deriv_min = QLineEdit(str(self.config.get(f"deriv_min_{self.meter_id}", "-1.0")))
+        self.ent_deriv_max = QLineEdit(str(self.config.get(f"deriv_max_{self.meter_id}", "1.0")))
+        
+        self.spin_deriv_smooth = QSpinBox()
+        self.spin_deriv_smooth.setRange(3, 99)
+        self.spin_deriv_smooth.setSingleStep(2)
+        self.spin_deriv_smooth.setValue(int(self.config.get(f"deriv_smooth_{self.meter_id}", 5)))
+        # Force odd values
+        self.spin_deriv_smooth.valueChanged.connect(lambda v: self.spin_deriv_smooth.setValue(v if v % 2 != 0 else v + 1))
+        
         form_layout.addRow("Time Window (min):", self.ent_time_win)
         form_layout.addRow("Cond Min:", self.ent_cond_min)
         form_layout.addRow("Cond Max:", self.ent_cond_max)
         form_layout.addRow("Temp Min (°C):", self.ent_temp_min)
         form_layout.addRow("Temp Max (°C):", self.ent_temp_max)
+        form_layout.addRow("Deriv Min:", self.ent_deriv_min)
+        form_layout.addRow("Deriv Max:", self.ent_deriv_max)
+        form_layout.addRow("Deriv Smooth (Odd int):", self.spin_deriv_smooth)
         
         self.xaxis_combo = QComboBox()
         self.xaxis_combo.addItems(["X-Axis: DateTime", "X-Axis: Duration (min)"])
@@ -432,8 +450,10 @@ class MeterController(QWidget):
         l_save.addRow("Interval (min):", self.ent_autosave_min)
 
         self.combo_autostop = QComboBox()
-        self.combo_autostop.addItems(["Off", "Stop Meter", "Stop Camera", "Stop Both"])
-        self.combo_autostop.setCurrentText(self.config.get(f"autostop_mode_{self.meter_id}", "Off"))
+        self.combo_autostop.addItems(["Off", "Stop Meter", "Stop OCR Log", "Stop Both"])
+        saved_mode = self.config.get(f"autostop_mode_{self.meter_id}", "Off")
+        if saved_mode == "Stop Camera": saved_mode = "Stop OCR Log"
+        self.combo_autostop.setCurrentText(saved_mode)
         l_save.addRow("Auto-Stop:", self.combo_autostop)
         
         self.ent_autostop_min = QLineEdit(self.config.get(f"autostop_min_{self.meter_id}", "60.0"))
@@ -725,18 +745,29 @@ class MeterController(QWidget):
             self.set_status("Recording...", "gray")
             self.unsaved_changes = True
             self.log_event("🔴 Recording Session Started.")
+            if hasattr(self, 'parent_app') and hasattr(self.parent_app, '_on_record_toggled'):
+                self.parent_app._on_record_toggled()
         else:
             self.is_recording = False
-            self.btn_record.setText("⏺ Start Recording")
+            self.btn_record.setText("▶ Start Recording")
             self.btn_record.setStyleSheet("background-color: #2ecc71; color: white;")
             self.set_status("Paused", "gray")
-            self.log_event("⏸️ Recording Session Paused.")
+            self.log_event("⏸ Recording Session Paused.")
             
             if self.combo_autosave.currentText() == "Every X Minutes":
                 self.save_excel(auto=True, is_background_autosave=True)
                 self.log_event("[Auto-Save] Data saved to directory automatically upon pause.")
             self.ax.set_title(f"Live (Not Recording): Conductivity (Meter {self.meter_id})")
         self.canvas.draw_idle()
+        
+        # Sync with global checkboxes
+        if hasattr(self, 'parent_app'):
+            if self.meter_id == 1 and hasattr(self.parent_app, 'chk_record_m1'):
+                self.parent_app.chk_record_m1.setChecked(self.is_recording)
+                self.parent_app.chk_record_m1.setStyleSheet(f"font-weight: bold; margin-left: 10px; color: {'#2ecc71' if self.is_recording else '#e74c3c'};")
+            elif self.meter_id == 2 and hasattr(self.parent_app, 'chk_record_m2'):
+                self.parent_app.chk_record_m2.setChecked(self.is_recording)
+                self.parent_app.chk_record_m2.setStyleSheet(f"font-weight: bold; margin-left: 10px; color: {'#2ecc71' if self.is_recording else '#e74c3c'};")
 
     def _save_hardware_lag(self, val):
         self.config[f"hardware_lag_ms_{self.meter_id}"] = float(val)
@@ -747,6 +778,7 @@ class MeterController(QWidget):
             self.config[f"auto_time_{self.meter_id}"] = self.auto_time_chk.isChecked()
             self.config[f"auto_cond_{self.meter_id}"] = self.auto_cond_chk.isChecked()
             self.config[f"auto_temp_{self.meter_id}"] = self.auto_temp_chk.isChecked()
+            self.config[f"auto_deriv_{self.meter_id}"] = self.auto_deriv_chk.isChecked()
             self.save_config()
         except: pass
         self.plot_data()
@@ -775,11 +807,15 @@ class MeterController(QWidget):
             self.config[f"cond_max_{self.meter_id}"] = self.ent_cond_max.text()
             self.config[f"temp_min_{self.meter_id}"] = self.ent_temp_min.text()
             self.config[f"temp_max_{self.meter_id}"] = self.ent_temp_max.text()
+            self.config[f"deriv_min_{self.meter_id}"] = self.ent_deriv_min.text()
+            self.config[f"deriv_max_{self.meter_id}"] = self.ent_deriv_max.text()
+            self.config[f"deriv_smooth_{self.meter_id}"] = self.spin_deriv_smooth.value()
             self.config[f"xaxis_{self.meter_id}"] = self.xaxis_combo.currentText()
             self.config[f"graph_unit_{self.meter_id}"] = self.unit_combo.currentText()
             self.config[f"auto_time_{self.meter_id}"] = self.auto_time_chk.isChecked()
             self.config[f"auto_cond_{self.meter_id}"] = self.auto_cond_chk.isChecked()
             self.config[f"auto_temp_{self.meter_id}"] = self.auto_temp_chk.isChecked()
+            self.config[f"auto_deriv_{self.meter_id}"] = self.auto_deriv_chk.isChecked()
             self.save_config()
         except Exception: pass
         
@@ -1564,9 +1600,9 @@ class MeterController(QWidget):
                             self.toggle_record()
                             self.log_event(f"🛑 Auto-Stop triggered for Meter at {elapsed_min:.1f} minutes.")
                             
-                        if mode in ["Stop Camera", "Stop Both"] and hasattr(self.parent_app, 'ocr_checkbox') and self.parent_app.ocr_checkbox.isChecked():
-                            self.parent_app.ocr_checkbox.setChecked(False)
-                            self.log_event(f"🛑 Auto-Stop triggered for Camera at {elapsed_min:.1f} minutes.")
+                        if mode in ["Stop OCR Log", "Stop Both", "Stop Camera"] and hasattr(self.parent_app, 'ocr_autolog_checkbox') and self.parent_app.ocr_autolog_checkbox.isChecked():
+                            self.parent_app.ocr_autolog_checkbox.setChecked(False)
+                            self.log_event(f"🔴 Auto-Stop triggered for OCR Logging at {elapsed_min:.1f} minutes.")
 
             if is_duration:
                 x_data = durations
@@ -1612,15 +1648,24 @@ class MeterController(QWidget):
                 y_arr[y_arr <= 0] = 1e-9
                 log_y = np.log10(y_arr)
                 deriv = None
-                if len(log_y) > 5:
+                
+                win_len = self.spin_deriv_smooth.value()
+                if len(log_y) > win_len:
                     try:
                         import scipy.signal
-                        deriv = scipy.signal.savgol_filter(log_y, window_length=5, polyorder=2, deriv=1)
+                        deriv = scipy.signal.savgol_filter(log_y, window_length=win_len, polyorder=2, deriv=1)
                     except:
                         pass
                 if deriv is None:
                     deriv = np.gradient(log_y)
                 self.ax2.plot(x_data, deriv, color='#9b59b6', linestyle='-', alpha=0.6, label="d(log)/dt")
+                
+                if not self.auto_deriv_chk.isChecked():
+                    try:
+                        dmin = float(self.ent_deriv_min.text())
+                        dmax = float(self.ent_deriv_max.text())
+                        self.ax2.set_ylim(dmin, dmax)
+                    except: pass
             
             if not self.auto_temp_chk.isChecked():
                 try:
@@ -2098,6 +2143,7 @@ class OCRFeedTab(QWidget):
         # 1. Camera Settings
         l_camera = make_collapsible("Camera Settings", left_layout)
         l_camera.addWidget(self.app.ocr_checkbox)
+        l_camera.addWidget(self.app.ocr_autostart_chk)
         
         l_camera.addWidget(QLabel("Camera Index (0=default, 1=external):"))
         self.camera_index_spin = QSpinBox()
@@ -2150,11 +2196,19 @@ class OCRFeedTab(QWidget):
         # 4. OCR Filters & Sanity Checks
         l_filters = make_collapsible("OCR Filters & Sanity Checks", left_layout)
         l_filters.addWidget(self.app.ocr_dual_mode_chk)
+        l_filters.addWidget(self.app.ocr_warn_streams_chk)
         
         dev_layout = QHBoxLayout()
         dev_layout.addWidget(self.app.ocr_enforce_dev_chk)
         dev_layout.addWidget(self.app.ocr_max_dev_spin)
         l_filters.addLayout(dev_layout)
+        
+        # Jump filter removed because it was duplicative of max deviation filter
+        
+        unit_layout = QHBoxLayout()
+        unit_layout.addWidget(QLabel("Unit Logic:"))
+        unit_layout.addWidget(self.app.ocr_unit_combo)
+        l_filters.addLayout(unit_layout)
         
         l_filters.addWidget(self.app.ocr_discard_chk)
         l_filters.addWidget(self.app.ocr_midpoint_chk)
@@ -2473,6 +2527,11 @@ class MeterApp(QMainWindow):
         self.ocr_checkbox.setStyleSheet("font-weight: bold; font-size: 14px; padding: 5px;")
         self.ocr_checkbox.toggled.connect(self.toggle_ocr_mode)
         
+        self.ocr_autostart_chk = QCheckBox("Auto-Start Camera on Launch")
+        self.ocr_autostart_chk.setChecked(self.shared_config.get("ocr_auto_start", True))
+        self.ocr_autostart_chk.setStyleSheet("margin-left: 10px; color: gray;")
+        self.ocr_autostart_chk.stateChanged.connect(self._save_ocr_config)
+        
         self.dataset_checkbox = QCheckBox("Auto-Record OCR Training Dataset")
         self.dataset_checkbox.setStyleSheet("font-weight: bold; margin-left: 10px; margin-right: 10px; color: #2980b9;")
         self.dataset_checkbox.stateChanged.connect(self.toggle_dataset_mode)
@@ -2481,6 +2540,10 @@ class MeterApp(QMainWindow):
         self.ocr_autolog_checkbox.setChecked(self.shared_config.get("ocr_autolog", True))
         self.ocr_autolog_checkbox.setStyleSheet("font-weight: bold; margin-left: 10px; margin-right: 10px; color: #27ae60;")
         self.ocr_autolog_checkbox.stateChanged.connect(self._save_ocr_config)
+        
+        self.ocr_warn_streams_chk = QCheckBox("Warn if missing streams on run start")
+        self.ocr_warn_streams_chk.setChecked(self.shared_config.get("ocr_warn_streams", True))
+        self.ocr_warn_streams_chk.stateChanged.connect(self._save_ocr_config)
         
         self.ocr_dual_mode_chk = QCheckBox("Require CNN & CV Consensus (Dual-Mode)")
         self.ocr_dual_mode_chk.setChecked(self.shared_config.get("ocr_dual_mode", True))
@@ -2526,9 +2589,16 @@ class MeterApp(QMainWindow):
         self.ocr_enforce_dev_chk.stateChanged.connect(self._save_ocr_config)
         
         self.ocr_max_dev_spin = QSpinBox()
-        self.ocr_max_dev_spin.setRange(1, 1000)
+        self.ocr_max_dev_spin.setRange(1, 99999)
         self.ocr_max_dev_spin.setValue(self.shared_config.get("ocr_max_dev", 50))
         self.ocr_max_dev_spin.valueChanged.connect(self._save_ocr_config)
+        
+        # Jump filter removed
+        
+        self.ocr_unit_combo = QComboBox()
+        self.ocr_unit_combo.addItems(["Auto-detect (Closest Ratio)", "Auto-detect (Assume Spike)", "Auto-detect (Assume Drop)"])
+        self.ocr_unit_combo.setCurrentText(self.shared_config.get("ocr_unit_force", "Auto-detect (Closest Ratio)"))
+        self.ocr_unit_combo.currentTextChanged.connect(self._save_ocr_config)
         
         self.spin_burst_count = QSpinBox()
         self.spin_burst_count.setRange(1, 100)
@@ -2590,13 +2660,13 @@ class MeterApp(QMainWindow):
         self.setCentralWidget(self.tabs)
         
         # Add Global Status Bar
-        self.status_m1 = QPushButton("🔌 M1: Disconnected")
-        self.status_m2 = QPushButton("🔌 M2: Disconnected")
+        self.status_m1 = QPushButton("⚠️ M1: NO SERIAL (DISCONNECTED)")
+        self.status_m2 = QPushButton("⚠️ M2: NO SERIAL (DISCONNECTED)")
         self.status_cam = QPushButton("🎥 Camera: Off")
         
         # Style status labels
-        self.status_m1.setStyleSheet("color: gray; font-weight: bold; margin-right: 5px; padding: 3px;")
-        self.status_m2.setStyleSheet("color: gray; font-weight: bold; margin-right: 20px; padding: 3px;")
+        self.status_m1.setStyleSheet("color: #e74c3c; font-weight: bold; margin-right: 5px; border: 1px solid #e74c3c; border-radius: 3px; padding: 2px;")
+        self.status_m2.setStyleSheet("color: #e74c3c; font-weight: bold; margin-right: 20px; border: 1px solid #e74c3c; border-radius: 3px; padding: 2px;")
         self.status_cam.setStyleSheet("color: gray; font-weight: bold; margin-right: 20px; padding: 3px;")
         
         self.statusBar().addWidget(self.status_m1)
@@ -2606,6 +2676,18 @@ class MeterApp(QMainWindow):
         
         # Add OCR controls to status bar
         self.statusBar().addPermanentWidget(self.ocr_autolog_checkbox)
+        
+        self.chk_record_m1 = QCheckBox("Rec M1")
+        self.chk_record_m1.setStyleSheet("font-weight: bold; margin-left: 10px; color: #e74c3c;")
+        self.chk_record_m1.clicked.connect(lambda: self.meter1.toggle_record() if hasattr(self, 'meter1') else None)
+        self.chk_record_m1.clicked.connect(self._on_record_toggled)
+        self.statusBar().addPermanentWidget(self.chk_record_m1)
+        
+        self.chk_record_m2 = QCheckBox("Rec M2")
+        self.chk_record_m2.setStyleSheet("font-weight: bold; margin-left: 10px; color: #e74c3c;")
+        self.chk_record_m2.clicked.connect(lambda: self.meter2.toggle_record() if hasattr(self, 'meter2') else None)
+        self.chk_record_m2.clicked.connect(self._on_record_toggled)
+        self.statusBar().addPermanentWidget(self.chk_record_m2)
         
         lbl_rate = QLabel(" OCR Sampling Rate (s): ")
         lbl_rate.setStyleSheet("font-weight: bold; margin-left: 20px;")
@@ -2629,6 +2711,10 @@ class MeterApp(QMainWindow):
             
         self.ocr_interval_spin.valueChanged.connect(on_ocr_interval_changed)
         self.statusBar().addPermanentWidget(self.ocr_interval_spin)
+        
+        self.lbl_ocr_status = QLabel("OCR: Idle")
+        self.lbl_ocr_status.setStyleSheet("font-weight: bold; margin-left: 20px; color: gray;")
+        self.statusBar().addWidget(self.lbl_ocr_status)
         
         self.meter1 = MeterController(meter_id=1, parent_app=self)
         self.meter2 = MeterController(meter_id=2, parent_app=self)
@@ -2658,8 +2744,9 @@ class MeterApp(QMainWindow):
         self.tabs.addTab(self.ocr_feed_tab, "Live OCR Feed")
         self.tabs.addTab(self.dataset_curation_tab, "Dataset Curation")
         
-        
-        
+        if self.ocr_autostart_chk.isChecked():
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(2500, lambda: self.ocr_checkbox.setChecked(True))
         
 
         try:
@@ -2718,6 +2805,8 @@ class MeterApp(QMainWindow):
     def _save_ocr_config(self):
         import json
         self.shared_config["ocr_autolog"] = self.ocr_autolog_checkbox.isChecked()
+        self.shared_config["ocr_warn_streams"] = self.ocr_warn_streams_chk.isChecked()
+        self.shared_config["ocr_auto_start"] = self.ocr_autostart_chk.isChecked()
         self.shared_config["ocr_dual_mode"] = self.ocr_dual_mode_chk.isChecked()
         self.shared_config["ocr_discard"] = self.ocr_discard_chk.isChecked()
         self.shared_config["ocr_midpoint"] = self.ocr_midpoint_chk.isChecked()
@@ -2725,6 +2814,7 @@ class MeterApp(QMainWindow):
         self.shared_config["ocr_enforce_max"] = self.ocr_enforce_max_chk.isChecked()
         self.shared_config["ocr_max_val"] = self.ocr_max_val_spin.value()
         self.shared_config["ocr_max_dev"] = self.ocr_max_dev_spin.value()
+        self.shared_config["ocr_unit_force"] = self.ocr_unit_combo.currentText()
         self.shared_config["ocr_burst_count"] = self.spin_burst_count.value()
         self.shared_config["ocr_phys_max_chk"] = self.ocr_phys_max_chk.isChecked()
         self.shared_config["ocr_phys_max_spin"] = self.ocr_phys_max_spin.value()
@@ -2736,6 +2826,56 @@ class MeterApp(QMainWindow):
             with open(self.config_path, "w") as f:
                 json.dump(self.shared_config, f, indent=4)
         except: pass
+
+    def _on_record_toggled(self):
+        if not getattr(self, 'ocr_warn_streams_chk', None) or not self.ocr_warn_streams_chk.isChecked():
+            return
+            
+        m1_rec = self.meter1.is_recording if hasattr(self, 'meter1') else False
+        m2_rec = self.meter2.is_recording if hasattr(self, 'meter2') else False
+        
+        # If any is recording, start a 15-second timer
+        if m1_rec or m2_rec:
+            # Prevent multiple timers
+            if getattr(self, '_warning_timer_active', False):
+                return
+            self._warning_timer_active = True
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(15000, self._check_streams_active)
+        else:
+            self._warning_timer_active = False
+
+    def _check_streams_active(self):
+        self._warning_timer_active = False
+        m1_rec = self.meter1.is_recording if hasattr(self, 'meter1') else False
+        m2_rec = self.meter2.is_recording if hasattr(self, 'meter2') else False
+        
+        if not m1_rec and not m2_rec:
+            return # User stopped recording before timer fired
+            
+        missing = []
+        if not self.ocr_checkbox.isChecked():
+            missing.append("OCR Camera (Turn Camera On)")
+        
+        m1_conn = self.meter1.is_connected if hasattr(self, 'meter1') else False
+        m2_conn = self.meter2.is_connected if hasattr(self, 'meter2') else False
+        
+        if not m1_conn:
+            missing.append("Meter 1 Serial Connection (Disconnected)")
+        if not m1_rec:
+            missing.append("Meter 1 Recording Toggle (Rec M1)")
+            
+        if not m2_conn:
+            missing.append("Meter 2 Serial Connection (Disconnected)")
+        if not m2_rec:
+            missing.append("Meter 2 Recording Toggle (Rec M2)")
+            
+        if missing:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Missing Data Streams Warning", 
+                "You have started recording a run, but the following streams are offline or not recording:\n\n" + 
+                "\n".join([f"- {m}" for m in missing]) + 
+                "\n\nIf you intended to record all of them, please enable them now to prevent unit logic lock-outs.")
 
     def set_ocr_status(self, text, color):
         if hasattr(self, 'status_cam'):
@@ -2749,8 +2889,8 @@ class MeterApp(QMainWindow):
             status_label.setText(f"M{meter_id}: Connected ({port})")
             status_label.setStyleSheet("color: #27ae60; font-weight: bold; margin-right: 20px;")
         else:
-            status_label.setText(f"M{meter_id}: Disconnected")
-            status_label.setStyleSheet("color: gray; font-weight: bold; margin-right: 20px;")
+            status_label.setText(f"⚠️ M{meter_id}: NO SERIAL (DISCONNECTED)")
+            status_label.setStyleSheet("color: #e74c3c; font-weight: bold; margin-right: 20px; border: 1px solid #e74c3c; border-radius: 3px; padding: 2px;")
 
     def toggle_ocr_mode(self, state):
         import time
@@ -2851,13 +2991,37 @@ class MeterApp(QMainWindow):
             # or value / 1000 (if LCD is showing uS).
             possible_ms_values = [ocr_val, ocr_val / 1000.0]
             
-            best_val = min(possible_ms_values, key=lambda x: abs(x - last_serial_ms))
+            unit_force = getattr(self, 'ocr_unit_combo', None)
+            unit_force_text = unit_force.currentText() if unit_force else "Auto-detect (Closest Ratio)"
+            
+            def _get_ratio(x):
+                if x == 0.0 or last_serial_ms == 0.0:
+                    return float('inf')
+                return x / last_serial_ms if x > last_serial_ms else last_serial_ms / x
+                
+            if unit_force_text == "Auto-detect (Assume Spike)" and last_serial_ms > 0:
+                # Pick the option that is strictly greater than the baseline, if one exists.
+                spikes = [x for x in possible_ms_values if x > last_serial_ms]
+                if spikes:
+                    best_val = min(spikes, key=_get_ratio)
+                else:
+                    best_val = min(possible_ms_values, key=_get_ratio)
+            elif unit_force_text == "Auto-detect (Assume Drop)" and last_serial_ms > 0:
+                # Pick the option that is strictly less than the baseline, if one exists.
+                drops = [x for x in possible_ms_values if x < last_serial_ms]
+                if drops:
+                    best_val = min(drops, key=_get_ratio)
+                else:
+                    best_val = min(possible_ms_values, key=_get_ratio)
+            else:
+                best_val = min(possible_ms_values, key=_get_ratio)
             
             if apply_dev_filter and getattr(self, 'ocr_enforce_dev_chk', None) and self.ocr_enforce_dev_chk.isChecked():
                 max_dev = getattr(self, 'ocr_max_dev_spin', None)
                 dev_thresh = (max_dev.value() / 100.0) if max_dev else 0.5
                 if abs(best_val - last_serial_ms) / last_serial_ms > dev_thresh:
                     return 0.0
+                    
             return best_val
             
         cnn_best = _get_best_permutation(val_cnn, True)
@@ -2902,25 +3066,47 @@ class MeterApp(QMainWindow):
         if len(readings) > 0 and readings[0] is not None:
             c1_cnn, c1_cv, c1_conf = readings[0]
             min_conf = getattr(self.ocr_pipeline, 'min_confidence', 0.0) if hasattr(self, 'ocr_pipeline') else 0.0
-            if min_conf > 0.0 and c1_conf < min_conf: c1_cnn = 0.0
+            rejected = False
+            if min_conf > 0.0 and c1_conf < min_conf: 
+                c1_cnn = 0.0
+                rejected = True
             
             meter1_start = getattr(self.meter1, 'first_serial_time', None)
-            if meter1_start is not None and time.time() - meter1_start >= 10:
+            if meter1_start is None or time.time() - meter1_start >= 10:
                 last_ms = getattr(self.meter1, 'last_serial_cond_ms', 0.0)
+                if last_ms == 0.0:
+                    last_ms = getattr(self.meter1, 'last_ocr_cond_ms', 0.0)
                 c1 = self._apply_ocr_consensus(c1_cnn, c1_cv, last_ms)
+                if c1 is not None and c1 != 0.0:
+                    self.meter1.last_ocr_cond_ms = c1
                 if c1 is not None:
                     row_data1 = (dt_str, "OCR", f"{c1*1000:.1f}", f"{c1:.3f}", "-", f"{c1_conf*100:.1f}")
                     if self.meter1.is_recording and getattr(self, 'ocr_autolog_checkbox', None) and self.ocr_autolog_checkbox.isChecked():
                         self.meter1.signals.update_tree.emit(now, row_data1)
+                elif rejected:
+                    pass
+            
+            # Update status bar indicator for Meter 1
+            if hasattr(self, 'lbl_ocr_status'):
+                if rejected:
+                    self.lbl_ocr_status.setText(f"OCR: Rejected (< {min_conf*100:.0f}%)")
+                    self.lbl_ocr_status.setStyleSheet("font-weight: bold; margin-left: 20px; color: #e74c3c;") # Red
+                else:
+                    self.lbl_ocr_status.setText(f"OCR: OK ({c1_conf*100:.0f}%)")
+                    self.lbl_ocr_status.setStyleSheet("font-weight: bold; margin-left: 20px; color: #2ecc71;") # Green
                 
         if len(readings) > 1 and readings[1] is not None:
             c2_cnn, c2_cv, c2_conf = readings[1]
             if min_conf > 0.0 and c2_conf < min_conf: c2_cnn = 0.0
             
             meter2_start = getattr(self.meter2, 'first_serial_time', None)
-            if meter2_start is not None and time.time() - meter2_start >= 10:
+            if meter2_start is None or time.time() - meter2_start >= 10:
                 last_ms = getattr(self.meter2, 'last_serial_cond_ms', 0.0)
+                if last_ms == 0.0:
+                    last_ms = getattr(self.meter2, 'last_ocr_cond_ms', 0.0)
                 c2 = self._apply_ocr_consensus(c2_cnn, c2_cv, last_ms)
+                if c2 is not None and c2 != 0.0:
+                    self.meter2.last_ocr_cond_ms = c2
                 if c2 is not None:
                     row_data2 = (dt_str, "OCR", f"{c2*1000:.1f}", f"{c2:.3f}", "-", f"{c2_conf*100:.1f}")
                     if self.meter2.is_recording and getattr(self, 'ocr_autolog_checkbox', None) and self.ocr_autolog_checkbox.isChecked():

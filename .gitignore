@@ -34,3 +34,8 @@ scratch/
 *.log
 Sessions/
 *.pt
+
+!meter_ocr_model.pt
+archive/
+__pycache__/
+Algorithm_Comparison/Adversarial_Benchmark/
