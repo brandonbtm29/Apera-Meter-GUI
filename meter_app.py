@@ -15,9 +15,15 @@ DATA_DIR = os.environ.get("UAKRON_APP_DATA_DIR") or os.path.join(
 )
 os.makedirs(DATA_DIR, exist_ok=True)
 os.chdir(DATA_DIR)
-# Per-machine settings (config, secrets, ROIs) live next to the app, gitignored.
-# They never go into SyncThing or GitHub. Frozen builds keep them next to the executable.
-CONFIG_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else script_dir
+# Settings (config, secrets, ROIs) live in the app folder by default, gitignored.
+# The "Settings Folder" option (settings_location.py) can point them at a synced
+# folder instead, e.g. "Settings" inside the data folder.
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
+import settings_location
+APP_DIR = settings_location.app_folder(script_dir)
+CONFIG_DIR = settings_location.resolve(APP_DIR, DATA_DIR)
+SETTINGS_FILES = ['config.json', 'global_rois.json']
 
 import serial
 import serial.tools.list_ports
@@ -1899,6 +1905,9 @@ class SettingsTab(QWidget):
         style_layout.addWidget(self.combo_style)
         l_app_inner.addLayout(style_layout)
         
+        l_app_inner.addWidget(settings_location.settings_folder_box(
+            APP_DIR, DATA_DIR, SETTINGS_FILES, save_cb=self.parent_app.meter1.save_config,
+            restart_cb=self.parent_app.restart_app))
         btn_restart = QPushButton("🔄 Restart Application")
         btn_restart.setStyleSheet("background-color: #8e44ad; color: white; padding: 10px; font-weight: bold;")
         btn_restart.clicked.connect(self.parent_app.restart_app)

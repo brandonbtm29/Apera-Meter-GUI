@@ -5,9 +5,11 @@ import time
 import os
 import sys
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "meter_ocr_model.pt")
-# ROI boxes are per-machine settings: kept next to the app (gitignored), not in SyncThing.
-ROIS_PATH = os.path.join(os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
-                         else os.path.dirname(os.path.abspath(__file__)), "global_rois.json")
+# ROI boxes are settings: stored in the app's settings folder (see settings_location.py).
+# meter_app chdirs into its data folder before importing this module.
+import settings_location
+ROIS_PATH = os.path.join(settings_location.resolve(
+    settings_location.app_folder(os.path.dirname(os.path.abspath(__file__))), os.getcwd()), "global_rois.json")
 import json
 
 try:

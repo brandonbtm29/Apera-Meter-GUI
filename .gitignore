@@ -46,3 +46,5 @@ CLAUDE.local.md
 
 # Local app state (lives in SyncThing data folder, created on demand)
 global_rois.json
+# Per-machine pointer to the settings folder
+settings_location.json
