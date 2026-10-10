@@ -48,3 +48,7 @@ CLAUDE.local.md
 global_rois.json
 # Per-machine pointer to the settings folder
 settings_location.json
+
+# Vendor software and manuals live in SyncThing (Electrical Conductivity Meter/Vendor Software/)
+Ignore/
+.DS_Store

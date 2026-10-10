@@ -16,6 +16,10 @@ Dual-meter PyQt6 app for Apera EC400S / EC8500 conductivity meters (serial auto-
 - `dataset_curation_tab.py`: labelling UI; writes crops to `Sessions/Master_Dataset/` in the data folder (the training set for LCD-Digit-CRNN).
 - `Scripts/`: `build_app.py`, `cleanup_1000x_gaps.py`, `preview.py`, `test.py` (app helpers only).
 
+## Public repo hygiene
+- This repo is public. History was rewritten on 10 Oct 2026 to drop the OCR research data and scripts (now in the private `LCD-Digit-CRNN`), the vendor PC Link software, an old remote-training script with a hard-coded login, and `global_rois.json`. A full pre-rewrite backup bundle is on the Mac in `GitHub Projects/UAkron/_archive/`.
+- Apera's PC Link software, drivers and the EC400S manual are in SyncThing: `Electrical Conductivity Meter/Vendor Software/`. Don't commit vendor binaries, manuals, data or credentials here.
+
 ## OCR research
 Training, the DoE sweeps, the adversarial benchmark and error profiling moved to the private repo `brandonbtm29/LCD-Digit-CRNN` (`../LCD-Digit-CRNN`) on 10 Oct 2026, with their file history. Read its `CLAUDE.md` for research status. To deploy a new model, copy the trained checkpoint over `meter_ocr_model.pt` here (Git LFS) and commit it.
 
