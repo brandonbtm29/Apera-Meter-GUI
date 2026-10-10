@@ -39,3 +39,7 @@ Sessions/
 archive/
 __pycache__/
 Algorithm_Comparison/Adversarial_Benchmark/
+
+# Local environment / Claude Code personal files
+CLAUDE.local.md
+.claude/settings.local.json
