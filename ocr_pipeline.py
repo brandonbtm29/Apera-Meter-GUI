@@ -3,7 +3,11 @@ import numpy as np
 import threading
 import time
 import os
+import sys
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "meter_ocr_model.pt")
+# ROI boxes are per-machine settings: kept next to the app (gitignored), not in SyncThing.
+ROIS_PATH = os.path.join(os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
+                         else os.path.dirname(os.path.abspath(__file__)), "global_rois.json")
 import json
 
 try:
@@ -57,15 +61,15 @@ class MeterOCR:
 
     def save_rois(self):
         try:
-            with open("global_rois.json", "w") as f:
+            with open(ROIS_PATH, "w") as f:
                 json.dump(self.rois, f)
         except Exception as e:
             print(f"Error saving ROIs: {e}")
 
     def load_rois(self):
         try:
-            if os.path.exists("global_rois.json"):
-                with open("global_rois.json", "r") as f:
+            if os.path.exists(ROIS_PATH):
+                with open(ROIS_PATH, "r") as f:
                     data = json.load(f)
                     for k in self.rois.keys():
                         if k in data and data[k] is not None:
