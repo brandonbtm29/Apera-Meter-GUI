@@ -43,3 +43,6 @@ Algorithm_Comparison/Adversarial_Benchmark/
 # Local environment / Claude Code personal files
 CLAUDE.local.md
 .claude/settings.local.json
+
+# Local app state (lives in SyncThing data folder, created on demand)
+global_rois.json
