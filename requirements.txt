@@ -4,3 +4,12 @@ pyserial
 matplotlib
 openpyxl
 pyinstaller
+numpy
+pandas
+scipy
+seaborn
+pillow
+opencv-python
+requests
+torch
+torchvision
