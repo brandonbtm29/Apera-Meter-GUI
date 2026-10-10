@@ -3,6 +3,7 @@ import numpy as np
 import threading
 import time
 import os
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "meter_ocr_model.pt")
 import json
 
 try:
@@ -39,8 +40,8 @@ class MeterOCR:
             try:
                 self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
                 self.model = MeterCRNN().to(self.device)
-                if os.path.exists("meter_ocr_model.pt"):
-                    self.model.load_state_dict(torch.load("meter_ocr_model.pt", map_location=self.device, weights_only=False))
+                if os.path.exists(MODEL_PATH):
+                    self.model.load_state_dict(torch.load(MODEL_PATH, map_location=self.device, weights_only=False))
                     self.model.eval()
                     self.transform = transforms.Compose([
                         transforms.Resize((64, 256)),

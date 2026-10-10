@@ -1,10 +1,20 @@
 import sys
 import os
 
-# Ensure the working directory is the location of the script
+# --- Code vs data -----------------------------------------------------------
+# Code lives in GitHub Projects/UAkron/<repo>; data (exports, backups, logs and
+# this machine's config) lives in SyncThing. The app runs with the data folder as
+# its working directory, so relative paths like "Data/" land there.
+# Override with UAKRON_APP_DATA_DIR (this app) or UAKRON_DATA_DIR (data root).
 script_dir = os.path.dirname(os.path.abspath(__file__))
-if os.getcwd() != script_dir:
-    os.chdir(script_dir)
+sys.argv[0] = os.path.abspath(sys.argv[0])  # keeps "Restart" working after chdir
+DATA_DIR = os.environ.get("UAKRON_APP_DATA_DIR") or os.path.join(
+    os.environ.get("UAKRON_DATA_DIR")
+    or os.path.join(os.path.expanduser("~"), "SyncThing", "UAkron Playground"),
+    "Electrical Conductivity Meter",
+)
+os.makedirs(DATA_DIR, exist_ok=True)
+os.chdir(DATA_DIR)
 
 import serial
 import serial.tools.list_ports
@@ -131,7 +141,7 @@ class MeterController(QWidget):
         self.signals.update_device_info.connect(self.set_device_info)
         self.signals.reset_manual_snap.connect(self._reset_manual_snap_ui)
         
-        self.config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+        self.config_path = os.path.join(DATA_DIR, 'config.json')
         
         if self.app_controller and not hasattr(self.app_controller, 'shared_config'):
             self.app_controller.shared_config = {}
@@ -2513,7 +2523,7 @@ class MeterApp(QMainWindow):
         self.resize(1400, 800)
         self.tabs = QTabWidget()
         
-        self.config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+        self.config_path = os.path.join(DATA_DIR, 'config.json')
         self.shared_config = {}
         if os.path.exists(self.config_path):
             try:
