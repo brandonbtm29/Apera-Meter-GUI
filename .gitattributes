@@ -1,1 +1,17 @@
+# Store text files with LF line endings in the repo; check them out natively.
+* text=auto
+
+# Windows launchers need CRLF; macOS/Linux launchers need LF.
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+*.ps1     text eol=crlf
+*.sh      text eol=lf
+*.command text eol=lf
+
+# Binary files
+*.ico binary
+*.png binary
+*.jpg binary
+
+# The deployed OCR model is stored with Git LFS (run "git lfs install" before cloning).
 meter_ocr_model.pt filter=lfs diff=lfs merge=lfs -text

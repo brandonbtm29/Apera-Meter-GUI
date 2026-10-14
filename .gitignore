@@ -1,54 +1,57 @@
-# Python
+# --- Your private settings: NEVER commit these ---
+# config.json holds per-meter settings, including Discord webhook URLs.
+config.json
+secrets.json
+global_rois.json
+# Per-machine pointer to the settings folder
+settings_location.json
+.env
+
+# --- Instrument data, exports and logs (they live in the data folder, not here) ---
+*.csv
+*.xlsx
+*.log
+Data/
+Data Backups/
+Sessions/
+Settings/
+Troubleshoot/
+
+# --- OCR research and vendor files (kept in the private LCD-Digit-CRNN repo / SyncThing) ---
+# Only the deployed model is versioned.
+*.pt
+!meter_ocr_model.pt
+Algorithm_Comparison/
+decompiled_ec400s/
+decompiled_ec8500/
+Ignore/
+archive/
+scratch/
+
+# --- Python ---
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
 
-# Environments
-.env
-.venv
-env/
+# --- Virtual environments ---
+.venv/
 venv/
+env/
 ENV/
 
-# User-specific configuration and local data
-config.json
-*.csv
-*.xlsx
-Data/
-Troubleshoot/
-error.log
-
-# IDEs
-.vscode/
-.idea/
-
-# PyInstaller
+# --- PyInstaller ---
 build/
 dist/
 *.spec
 
-decompiled_ec400s/
-decompiled_ec8500/
-scratch/
-*.log
-Sessions/
-*.pt
-
-!meter_ocr_model.pt
-archive/
-__pycache__/
-Algorithm_Comparison/Adversarial_Benchmark/
-
-# Local environment / Claude Code personal files
+# --- Editors, OS and assistant-local files ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
 CLAUDE.local.md
 .claude/settings.local.json
-
-# Local app state (lives in SyncThing data folder, created on demand)
-global_rois.json
-# Per-machine pointer to the settings folder
-settings_location.json
-
-# Vendor software and manuals live in SyncThing (Electrical Conductivity Meter/Vendor Software/)
-Ignore/
-.DS_Store
