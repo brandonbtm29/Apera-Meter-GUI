@@ -1,15 +1,3 @@
-PyQt6
-pyqtdarktheme
-pyserial
-matplotlib
-openpyxl
-pyinstaller
-numpy
-pandas
-scipy
-seaborn
-pillow
-opencv-python
-requests
-torch
-torchvision
+# Kept so "pip install -r requirements.txt" (used by older notes and launchers) still works.
+# The real dependency list lives in pyproject.toml. Run this from the repository folder.
+-e .[ocr]

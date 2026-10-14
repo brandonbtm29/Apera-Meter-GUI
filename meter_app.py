@@ -1,6 +1,8 @@
 import sys
 import os
 
+__version__ = "0.1.0"  # single source of truth; read by pyproject.toml
+
 # --- Code vs data -----------------------------------------------------------
 # Code lives in GitHub Projects/UAkron/<repo>; data (exports, backups, logs) lives
 # in SyncThing. The app runs with the data folder as

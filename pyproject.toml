@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "apera-meter-gui"
+dynamic = ["version"]
+description = "Dual-meter desktop app for logging and plotting Apera EC400S / EC8500 conductivity meters."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Brandon T. McReynolds" }]
+requires-python = ">=3.11"
+keywords = ["conductivity", "apera", "serial", "data-logging", "pyqt6", "laboratory"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+]
+dependencies = [
+    "PyQt6>=6.5",
+    # Unmaintained; pip installs 2.1.0 on Python 3.11 and 0.1.7 on 3.12+. The app works with both.
+    "pyqtdarktheme",
+    "pyserial>=3.5",
+    "matplotlib>=3.7",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "openpyxl>=3.1",
+    "opencv-python>=4.8",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+# Reading the meter's LCD from a camera (Live OCR Feed tab). The app runs without these.
+ocr = ["torch>=2.1", "torchvision>=0.16", "pillow>=10.0"]
+dev = ["pytest>=8", "ruff>=0.14", "pyinstaller>=6"]
+
+[project.urls]
+Homepage = "https://github.com/brandonbtm29/Apera-Meter-GUI"
+Issues = "https://github.com/brandonbtm29/Apera-Meter-GUI/issues"
+Changelog = "https://github.com/brandonbtm29/Apera-Meter-GUI/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "meter_app.py"
+
+# The app runs from a clone (it loads its icon and OCR model from next to the code),
+# so this is mainly for "pip install -e ." The wheel just carries the modules.
+[tool.hatch.build.targets.wheel]
+only-include = [
+    "meter_app.py",
+    "ocr_pipeline.py",
+    "ocr_model.py",
+    "dataset_curation_tab.py",
+    "settings_location.py",
+]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["meter_ocr_model.pt", "/.github"]
