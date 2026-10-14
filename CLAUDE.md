@@ -17,17 +17,17 @@ Dual-meter PyQt6 app for Apera EC400S / EC8500 conductivity meters (serial auto-
 - `Scripts/`: `build_app.py`, `cleanup_1000x_gaps.py`, `preview.py`, `test.py` (app helpers only).
 
 ## Public repo hygiene
-- This repo is public. History was rewritten on 10 Oct 2026 to drop the OCR research data and scripts (now in the private `LCD-Digit-CRNN`), the vendor PC Link software, an old remote-training script with a hard-coded login, and `global_rois.json`. A full pre-rewrite backup bundle is on the Mac in `GitHub Projects/UAkron/_archive/`.
+- This repo is public. History was rewritten on 10 Oct 2026 to drop the OCR research data and scripts (now in the private `LCD-Digit-CRNN`), the vendor PC Link software, an old remote-training script with a hard-coded login, and `global_rois.json`. Machine-specific notes (backup locations, local paths) go in `CLAUDE.local.md`, which is gitignored.
 - Apera's PC Link software, drivers and the EC400S manual are in SyncThing: `Electrical Conductivity Meter/Reference/Vendor Software/`. Don't commit vendor binaries, manuals, data or credentials here.
 
 ## OCR research
 Training, the DoE sweeps, the adversarial benchmark and error profiling moved to the private repo `brandonbtm29/LCD-Digit-CRNN` (`../LCD-Digit-CRNN`) on 10 Oct 2026, with their file history. Read its `CLAUDE.md` for research status. To deploy a new model, copy the trained checkpoint over `meter_ocr_model.pt` here (Git LFS) and commit it.
 
 ## Where code and data live
-- **Code** (this repo) is cloned outside SyncThing: `C:\Users\<you>\GitHub Projects\UAkron\Apera-Meter-GUI` on Windows, `~/GitHub Projects/UAkron/Apera-Meter-GUI` on the Mac. It syncs through GitHub only.
-- **Instrument data** stays in SyncThing: `C:\Users\<you>\SyncThing\UAkron Playground\Electrical Conductivity Meter\` (Mac: `~/SyncThing/UAkron Playground/Electrical Conductivity Meter/`). Never copy data into the repo, and never commit the settings files listed below.
+- **Code** (this repo) is cloned outside SyncThing, e.g. `~/GitHub Projects/UAkron/Apera-Meter-GUI`. It syncs through GitHub only.
+- **Instrument data** stays in SyncThing, by default `~/SyncThing/UAkron Playground/Electrical Conductivity Meter/`. Never copy data into the repo, and never commit the settings files listed below.
 - **How it works:** at startup the app `chdir`s into its SyncThing data folder (`DATA_DIR`, override with `UAKRON_APP_DATA_DIR` or `UAKRON_DATA_DIR`). Every relative data path (`Data/`, `Data Backups/`, `Sessions/`, run logs) therefore resolves inside SyncThing, and the default save folder is `Data` there. Files that ship with the code (icons, the OCR model) must be loaded via `script_dir` / `__file__`, never by bare relative name. Run the app from this clone.
 - **Settings folder (since 10 Oct 2026):** the settings files (`config.json`, `global_rois.json`) are read from `CONFIG_DIR`, resolved by `settings_location.py` (identical copy in every UAkron repo). Default: this repo folder (gitignored), so a fresh clone starts from the app's defaults. The per-machine pointer `settings_location.json` (gitignored), set from the app's "Settings Folder" box, can move them; a relative path is relative to the data folder. Brandon's machines point at `Settings`, i.e. `UAkron Playground/<App>/Settings/` in SyncThing, so settings stay identical across computers (including `secrets.json`; never print it). `UAKRON_SETTINGS_DIR` overrides the pointer. Store save folders relative to the data folder (e.g. `Data`), not as absolute paths.
 
 ## Launch
-Double-click `Launch_Windows.bat` / `Launch_Mac.command`. They use this repo's `.venv` (create it with `python -m venv .venv` and `pip install -r requirements.txt`). Windows Smart App Control is on for the lab PC; if a DLL import is "blocked by an Application Control policy", retry once before investigating.
+Double-click `Launch_Windows.bat` / `Launch_Mac.command`. They use this repo's `.venv` (create it with `python -m venv .venv` and `pip install -r requirements.txt`). If Windows Smart App Control blocks a DLL import ("blocked by an Application Control policy"), retry once before investigating.
