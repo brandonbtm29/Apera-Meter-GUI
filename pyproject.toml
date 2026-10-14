@@ -82,3 +82,6 @@ ignore = [
     "S110", "S603", "S607",
     "UP008", "UP015",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
