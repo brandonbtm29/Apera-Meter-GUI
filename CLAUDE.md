@@ -2,22 +2,27 @@
 
 Dual-meter PyQt6 app for Apera EC400S / EC8500 conductivity meters (serial auto-discovery, live plots, auto memory dumps, Excel export, session recovery), plus a CRNN OCR model that reads the meter's 7-segment LCD from a camera feed. Part of Brandon's UAkron lab workspace (shared conventions in `../CLAUDE.md` when the repos are cloned side by side in `GitHub Projects/UAkron/`). GitHub: `brandonbtm29/Apera-Meter-GUI`.
 
-## Run / build
-- Install: `pip install -r requirements.txt` (includes PyTorch/torchvision and OpenCV for OCR inference)
+## Run / build / test
+- Install: `pip install -e ".[ocr,dev]"` (or `pip install -r requirements.txt`, which installs `-e .[ocr]`). Dependencies live in `pyproject.toml`; `ocr` = PyTorch/torchvision/Pillow, `dev` = pytest/ruff/PyInstaller.
 - Run: `python meter_app.py`
-- Build: `python Scripts/build_app.py` → `dist/Apera_Meter_GUI`
+- Test: `pytest` (headless; `tests/conftest.py` points the data and settings folders at a temp dir before `meter_app` is imported, because importing it `chdir`s into the data folder).
+- Lint/format: `ruff check . && ruff format --check .`. `settings_location.py` is excluded from ruff so it stays byte-identical to the other UAkron repos. Don't enable import sorting (torch must load before PyQt6 on Windows).
+- Version: `__version__` in `meter_app.py` is the only place; update `CHANGELOG.md` with every user-facing change. Release steps are in the README.
+- Build: `python Scripts/build_app.py` → `dist/Apera_Meter_GUI` (untested; doesn't bundle the model or icon).
 - Use a per-machine virtualenv: `python -m venv .venv` in this folder (gitignored). Never sync or commit it.
-- `meter_ocr_model.pt` is stored with **Git LFS** (`.gitattributes`). Run `git lfs install` on each machine before cloning.
+- `meter_ocr_model.pt` is stored with **Git LFS** (`.gitattributes`). Run `git lfs install` on each machine before cloning. CI deliberately doesn't fetch it.
+- Commits: author email `208085582+brandonbtm29@users.noreply.github.com`; end AI-assisted commits with a `Co-Authored-By:` trailer. CI (`.github/workflows/ci.yml`) must stay green.
 
 ## Code map
 - `meter_app.py` (~3,200 lines): `MeterController` (per-meter tab and serial), `SettingsTab`, `OCRFeedTab` (camera + ROI via `InteractiveImageLabel`, ROIs saved in `global_rois.json` in the data folder), `MeterApp` (main window).
 - `ocr_model.py`: `MeterCRNN`, the deployed model definition. A copy lives in `LCD-Digit-CRNN`; keep the two in sync if the architecture changes.
 - `ocr_pipeline.py`: preprocessing and inference; loads `meter_ocr_model.pt` from this folder via `__file__`.
 - `dataset_curation_tab.py`: labelling UI; writes crops to `Sessions/Master_Dataset/` in the data folder (the training set for LCD-Digit-CRNN).
-- `Scripts/`: `build_app.py`, `cleanup_1000x_gaps.py`, `preview.py`, `test.py` (app helpers only).
+- `Scripts/`: `build_app.py`, `cleanup_1000x_gaps.py`, `make_screenshot.py` (renders `docs/screenshot.png` with fake data), `preview.py`, `test.py` (app helpers only).
+- `tests/`: headless pytest smoke tests.
 
 ## Public repo hygiene
-- This repo is public. History was rewritten on 10 Oct 2026 to drop the OCR research data and scripts (now in the private `LCD-Digit-CRNN`), the vendor PC Link software, an old remote-training script with a hard-coded login, and `global_rois.json`. Machine-specific notes (backup locations, local paths) go in `CLAUDE.local.md`, which is gitignored.
+- This repo is public. History was rewritten on 10 Oct 2026 to drop the OCR research data and scripts (now in the private `LCD-Digit-CRNN`), the vendor PC Link software, an old remote-training script with a hard-coded login, and `global_rois.json`. It was rewritten again on 14 Oct 2026 to map every author to the GitHub noreply address and remove home-folder paths and machine names. Machine-specific notes (backup locations, local paths) go in `CLAUDE.local.md`, which is gitignored.
 - Apera's PC Link software, drivers and the EC400S manual are in SyncThing: `Electrical Conductivity Meter/Reference/Vendor Software/`. Don't commit vendor binaries, manuals, data or credentials here.
 
 ## OCR research
