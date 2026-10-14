@@ -2,13 +2,14 @@ import os
 import sys
 import subprocess
 
+
 def build():
     print("Building executable for Apera Meter GUI...")
     print("Ensuring dependencies are installed...")
-    
+
     # Run pip install
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
-    
+
     # Run pyinstaller
     print("Running PyInstaller...")
     cmd = [
@@ -16,14 +17,17 @@ def build():
         "-y",
         "--noconsole",
         "--onefile",
-        "--name", "Apera_Meter_GUI",
-        "--exclude-module", "PySide6",
-        "--exclude-module", "PyQt5",
-        "meter_app.py"
+        "--name",
+        "Apera_Meter_GUI",
+        "--exclude-module",
+        "PySide6",
+        "--exclude-module",
+        "PyQt5",
+        "meter_app.py",
     ]
-    
+
     subprocess.check_call(cmd)
-    
+
     print("\n=============================================")
     print("BUILD COMPLETE!")
     if sys.platform == "win32":
@@ -35,6 +39,7 @@ def build():
     else:
         print("Your executable is located in the 'dist' folder.")
     print("=============================================")
+
 
 if __name__ == "__main__":
     build()
