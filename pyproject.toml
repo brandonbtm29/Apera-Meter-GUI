@@ -37,7 +37,7 @@ dependencies = [
 [project.optional-dependencies]
 # Reading the meter's LCD from a camera (Live OCR Feed tab). The app runs without these.
 ocr = ["torch>=2.1", "torchvision>=0.16", "pillow>=10.0"]
-dev = ["pytest>=8", "ruff>=0.14", "pyinstaller>=6"]
+dev = ["pytest>=8", "ruff>=0.17,<0.18", "pyinstaller>=6"]
 
 [project.urls]
 Homepage = "https://github.com/brandonbtm29/Apera-Meter-GUI"
@@ -60,3 +60,25 @@ only-include = [
 
 [tool.hatch.build.targets.sdist]
 exclude = ["meter_ocr_model.pt", "/.github"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+# Shared with the other UAkron lab apps; keep it byte-identical to their copies.
+extend-exclude = ["settings_location.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S"]
+ignore = [
+    "S101",  # assert is fine in tests
+    # The rules below have existing violations in the app code. They are switched off for now
+    # so CI can gate on real bugs (undefined names, syntax errors, used-before-assignment).
+    # Re-enable them one at a time as the code is cleaned up.
+    "E402",  # imports not at top: torch must load before PyQt6 on Windows (OpenMP/MKL deadlock)
+    "I001",  # import sorting: same reason; reordering imports is not safe here
+    "E401", "E501", "E701", "E702", "E722", "E741",
+    "F401", "F541", "F811", "F841",
+    "B007", "B905",
+    "S110", "S603", "S607",
+    "UP008", "UP015",
+]
