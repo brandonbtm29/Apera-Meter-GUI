@@ -2767,7 +2767,6 @@ class MeterApp(QMainWindow):
         self.tabs.addTab(self.dataset_curation_tab, "Dataset Curation")
         
         if self.ocr_autostart_chk.isChecked():
-            from PyQt6.QtCore import QTimer
             QTimer.singleShot(2500, lambda: self.ocr_checkbox.setChecked(True))
         
 
