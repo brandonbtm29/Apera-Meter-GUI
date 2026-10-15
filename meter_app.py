@@ -4,17 +4,34 @@ import os
 __version__ = "0.1.0"  # single source of truth; read by pyproject.toml
 
 # --- Code vs data -----------------------------------------------------------
-# Code lives in GitHub Projects/UAkron/<repo>; data (exports, backups, logs) lives
-# in SyncThing. The app runs with the data folder as
-# its working directory, so relative paths like "Data/" land there.
+# Data (exports, backups, logs) lives outside the code. The app runs with the data
+# folder as its working directory, so relative paths like "Data/" land there.
 # Override with UAKRON_APP_DATA_DIR (this app) or UAKRON_DATA_DIR (data root).
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.argv[0] = os.path.abspath(sys.argv[0])  # keeps "Restart" working after chdir
-DATA_DIR = os.environ.get("UAKRON_APP_DATA_DIR") or os.path.join(
-    os.environ.get("UAKRON_DATA_DIR")
-    or os.path.join(os.path.expanduser("~"), "SyncThing", "UAkron Playground"),
-    "Electrical Conductivity Meter",
-)
+
+DATA_FOLDER_NAME = "Electrical Conductivity Meter"
+
+
+def default_data_dir(home=None):
+    """The lab's SyncThing folder when it exists on this computer, else Documents/Apera Meter Data."""
+    home = home or os.path.expanduser("~")
+    synced_root = os.path.join(home, "SyncThing", "UAkron Playground")
+    if os.path.isdir(synced_root):
+        return os.path.join(synced_root, DATA_FOLDER_NAME)
+    return os.path.join(home, "Documents", "Apera Meter Data")
+
+
+def resolve_data_dir(environ=None, home=None):
+    environ = os.environ if environ is None else environ
+    if environ.get("UAKRON_APP_DATA_DIR"):
+        return environ["UAKRON_APP_DATA_DIR"]
+    if environ.get("UAKRON_DATA_DIR"):
+        return os.path.join(environ["UAKRON_DATA_DIR"], DATA_FOLDER_NAME)
+    return default_data_dir(home)
+
+
+DATA_DIR = resolve_data_dir()
 os.makedirs(DATA_DIR, exist_ok=True)
 os.chdir(DATA_DIR)
 # Settings (config, secrets, ROIs) live in the app folder by default, gitignored.
