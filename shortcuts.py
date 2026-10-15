@@ -77,10 +77,10 @@ def windows_target(app_dir, python=None, frozen=None):
 
 def mac_launch_command(app_dir, python=None):
     """Shell command the macOS shortcut runs: start the app in the background, output to its log."""
-    app_dir = Path(app_dir)
+    app_dir = os.fspath(app_dir)  # keep "/" separators (only ever runs on macOS)
     python = python or sys.executable
     return (
-        f"cd {shlex.quote(str(app_dir))} && APERA_LOG_TO_FILE=1 "
+        f"cd {shlex.quote(app_dir)} && APERA_LOG_TO_FILE=1 "
         f"nohup {shlex.quote(str(python))} meter_app.py >/dev/null 2>&1 &"
     )
 
