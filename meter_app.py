@@ -2856,6 +2856,7 @@ class MeterApp(QMainWindow):
     ocr_readings_signal = pyqtSignal(list)
     ocr_frame_signal = pyqtSignal(object, object)
     update_check_finished = pyqtSignal(object, object)  # (Release or None, error message or None)
+    background_update_checked = pyqtSignal(object, object)  # same, from the silent check at start
     update_install_finished = pyqtSignal(object, str)  # (error message or None, log text)
 
     def __init__(self):
@@ -3097,6 +3098,15 @@ class MeterApp(QMainWindow):
         self.lbl_ocr_status.setStyleSheet("font-weight: bold; margin-left: 20px; color: gray;")
         self.statusBar().addWidget(self.lbl_ocr_status)
 
+        # Version, bottom right. Turns amber when GitHub has a newer release (see _start_background_checks).
+        self.btn_version = QPushButton(f"v{__version__}")
+        self.btn_version.setFlat(True)
+        self.btn_version.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_version.setToolTip("Version of this app. Click to check for updates.")
+        self.btn_version.clicked.connect(self.check_for_updates)
+        self._set_version_badge("unknown")
+        self.statusBar().addPermanentWidget(self.btn_version)
+
         self.meter1 = MeterController(meter_id=1, parent_app=self)
         self.meter2 = MeterController(meter_id=2, parent_app=self)
 
@@ -3190,6 +3200,73 @@ class MeterApp(QMainWindow):
             f"Shortcut created on the desktop:\n{path}\n\nIt keeps working after updates.",
         )
 
+    # --- Version badge and background checks -----------------------------------
+    def _set_version_badge(self, state, latest=None):
+        """state: 'unknown' (not checked / offline), 'current', or 'outdated'."""
+        if state == "outdated":
+            self.btn_version.setText(f"⬆️ v{__version__} – {latest} available")
+            self.btn_version.setToolTip(
+                f"A newer version ({latest}) is available. Click to see what changed and update."
+            )
+            self.btn_version.setStyleSheet(
+                "QPushButton { color: #1e1e1e; background-color: #f39c12; border-radius: 3px;"
+                " padding: 2px 8px; font-weight: bold; }"
+            )
+        else:
+            self.btn_version.setText(f"v{__version__}")
+            tip = (
+                f"Up to date (latest release is {latest}). Click to check again."
+                if state == "current"
+                else "Version of this app. Click to check for updates."
+            )
+            self.btn_version.setToolTip(tip)
+            self.btn_version.setStyleSheet("QPushButton { color: #9aa0a6; border: none; padding: 2px 8px; }")
+
+    def _start_background_checks(self):
+        """After start-up: quietly look for a newer release (and again once a day while running),
+        and refresh an existing desktop shortcut so its icon and target stay current."""
+        if os.environ.get("APERA_NO_BACKGROUND_CHECKS") == "1":
+            return
+        self.background_update_checked.connect(self._on_background_update_checked)
+        QTimer.singleShot(3000, self._background_update_check)
+        self._daily_update_timer = QTimer(self)
+        self._daily_update_timer.timeout.connect(self._background_update_check)
+        self._daily_update_timer.start(24 * 60 * 60 * 1000)
+
+        def refresh_shortcut():
+            try:
+                import shortcuts
+
+                shortcuts.refresh_existing_shortcut(script_dir)
+            except Exception as e:
+                print(f"Couldn't refresh the desktop shortcut: {e}")
+
+        threading.Thread(target=refresh_shortcut, daemon=True).start()
+
+    def _background_update_check(self):
+        import updater
+
+        def worker():
+            try:
+                self.background_update_checked.emit(updater.fetch_latest_release(), None)
+            except Exception as e:  # offline, rate-limited... stay quiet
+                self.background_update_checked.emit(None, str(e))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_background_update_checked(self, release, error):
+        import updater
+
+        if error or release is None:
+            self._set_version_badge("unknown")
+            self.btn_version.setToolTip("Couldn't check for updates (offline?). Click to try again.")
+            return
+        if updater.is_newer(release.tag, __version__):
+            self._set_version_badge("outdated", release.tag)
+            self.settings_tab.lbl_update_status.setText(f"{release.tag} is available.")
+        else:
+            self._set_version_badge("current", release.tag)
+
     # --- Updates -------------------------------------------------------------
     def check_for_updates(self, checked=False):
         """Ask GitHub for the newest release (in the background) and offer to install it."""
@@ -3223,6 +3300,7 @@ class MeterApp(QMainWindow):
             QMessageBox.warning(self, "Check for Updates", error)
             return
         if not updater.is_newer(release.tag, __version__):
+            self._set_version_badge("current", release.tag)
             tab.lbl_update_status.setText(f"Up to date (latest release is {release.tag}).")
             QMessageBox.information(
                 self, "Check for Updates", f"You have the latest version ({__version__})."
@@ -3230,6 +3308,7 @@ class MeterApp(QMainWindow):
             return
 
         tab.lbl_update_status.setText(f"{release.tag} is available.")
+        self._set_version_badge("outdated", release.tag)
         kind = updater.install_kind(script_dir)
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Update available: {release.name}")
@@ -3822,14 +3901,38 @@ def _self_test(app, window):
     return app.exec()
 
 
+def _log_to_file_if_needed():
+    """Send output to <data folder>/app.log when there is no console to show it.
+
+    That is the case for pythonw.exe (Windows launcher and shortcut), the standalone build, and
+    the macOS launcher/shortcut (which set APERA_LOG_TO_FILE=1). Keeps one older log (app.log.1).
+    """
+    if sys.stderr is not None and os.environ.get("APERA_LOG_TO_FILE") != "1":
+        return None
+    path = os.path.join(DATA_DIR, "app.log")
+    try:
+        if os.path.exists(path) and os.path.getsize(path) > 5_000_000:
+            os.replace(path, path + ".1")
+        log = open(path, "a", encoding="utf-8", buffering=1)  # kept open for the life of the app
+    except OSError:
+        return None
+    log.write(
+        f"\n--- Apera Meter GUI {__version__} started {datetime.datetime.now():%Y-%m-%d %H:%M:%S} ---\n"
+    )
+    sys.stdout = sys.stderr = log
+    return path
+
+
 def main(argv=None):
     argv = list(sys.argv if argv is None else argv)
     self_test = "--self-test" in argv
+    _log_to_file_if_needed()
     app = create_app([a for a in argv if a != "--self-test"])
     window = MeterApp()
     window.show()
     if self_test:
         sys.exit(_self_test(app, window))
+    window._start_background_checks()
     sys.exit(app.exec())
 
 

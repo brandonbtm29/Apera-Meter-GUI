@@ -16,6 +16,7 @@ os.environ["UAKRON_APP_DATA_DIR"] = str(_tmp / "data")
 os.environ["UAKRON_SETTINGS_DIR"] = str(_tmp / "settings")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("MPLBACKEND", "QtAgg")
+os.environ["APERA_NO_BACKGROUND_CHECKS"] = "1"  # no network calls or desktop changes from tests
 
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))

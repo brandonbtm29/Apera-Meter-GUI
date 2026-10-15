@@ -20,12 +20,39 @@ def test_linux_launcher_points_at_this_copy(tmp_path):
         assert os.access(path, os.X_OK)
 
 
-def test_mac_command_runs_the_launcher(tmp_path):
+def test_mac_shortcut_starts_the_app_in_the_background():
+    script = shortcuts.mac_applescript("/Users/me/GitHub Projects/Apera Meter", "/Users/me/.venv/bin/python")
+    assert script.startswith('do shell script "')
+    assert "cd '/Users/me/GitHub Projects/Apera Meter'" in script
+    assert "APERA_LOG_TO_FILE=1 nohup /Users/me/.venv/bin/python meter_app.py" in script
+    assert script.rstrip('"').endswith("&")  # returns at once instead of waiting for the app
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="builds a real macOS app bundle")
+def test_mac_shortcut_is_an_app_with_the_meter_icon(tmp_path):
+    (tmp_path / "Apera Meter GUI.command").write_text("old 1.2.0 shortcut")
     path = shortcuts.create_desktop_shortcut(REPO, desktop=tmp_path, platform="darwin")
-    text = path.read_text(encoding="utf-8")
-    assert path.name == "Apera Meter GUI.command"
-    assert text.startswith("#!/bin/bash")
-    assert f'exec "{REPO / "Launch_Mac.command"}"' in text
+    assert path.name == "Apera Meter GUI.app"
+    assert not (tmp_path / "Apera Meter GUI.command").exists()  # the old style is replaced
+    icon = path / "Contents" / "Resources" / "applet.icns"
+    assert icon.stat().st_size > 10_000
+    assert subprocess.run(["codesign", "--verify", str(path)], check=False).returncode == 0
+    script = subprocess.run(
+        ["osadecompile", str(path / "Contents" / "Resources" / "Scripts" / "main.scpt")],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "meter_app.py" in script
+
+
+def test_refresh_only_touches_an_existing_shortcut(tmp_path):
+    assert shortcuts.refresh_existing_shortcut(REPO, desktop=tmp_path, platform="linux") is None
+    assert list(tmp_path.iterdir()) == []
+    stale = tmp_path / "Apera Meter GUI.desktop"
+    stale.write_text("[Desktop Entry]\nExec=/old/place/meter_app.py\n")
+    assert shortcuts.refresh_existing_shortcut(REPO, desktop=tmp_path, platform="linux") == stale
+    assert str(REPO / "meter_app.py") in stale.read_text(encoding="utf-8")
 
 
 def test_running_again_replaces_the_shortcut(tmp_path):
