@@ -21,6 +21,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         python: ["3.11", "3.12", "3.13", "3.14"]
+        include:
+          - os: macos-latest  # checks the macOS desktop shortcut (a real .app bundle)
+            python: "3.12"
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
