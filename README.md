@@ -37,8 +37,10 @@ are needed every few seconds for hours and nobody should have to copy numbers of
   display, and the app reads the digits with a trained model. A curation tab helps collect and
   label images for retraining.
 - **Shared settings**: keep settings in a synced folder so several computers behave the same.
-- **One-click updates**: **Check for Updates** on the Settings tab installs the newest release.
-- **Desktop shortcut**: **Create Desktop Shortcut** on the Settings tab puts the app on your desktop.
+- **One-click updates**: the version number in the bottom-right corner turns amber when a newer
+  release is out; click it (or **Settings → Check for Updates**) to see what changed and update.
+- **Desktop shortcut**: **Create Desktop Shortcut** on the Settings tab puts the app, with its
+  meter icon, on your desktop.
 
 ## Quick start
 
@@ -71,6 +73,9 @@ Then install and start it:
 |---|---|---|
 | Install | `.venv\Scripts\python -m pip install -e ".[ocr]"` | `.venv/bin/python -m pip install -e ".[ocr]"` |
 | Start | double-click `Launch_Windows.bat` | double-click `Launch_Mac.command` |
+
+The launchers check that everything is installed, start the app and then close their console or
+Terminal window. If something is missing, the window stays open and shows the error.
 
 Leave out `[ocr]` (i.e. `pip install -e .`) to skip PyTorch, which is a large download. The
 app still runs; only the camera reading is unavailable.
@@ -156,7 +161,7 @@ webhook URL can post to that channel.
 | `dataset_curation_tab.py` | The labelling tab |
 | `settings_location.py` | Where settings are stored (shared with the lab's other apps) |
 | `updater.py` | Checks GitHub for a newer release and updates a git clone |
-| `shortcuts.py` | Creates the desktop shortcut (Windows `.lnk`, macOS `.command`, Linux `.desktop`) |
+| `shortcuts.py` | Creates the desktop shortcut (Windows `.lnk`, macOS `.app`, Linux `.desktop`) |
 | `Scripts/` | Build script, log repair (`cleanup_1000x_gaps.py`), screenshot generator |
 
 ## Good to know
@@ -172,9 +177,12 @@ webhook URL can post to that channel.
 - The dark theme comes from `pyqtdarktheme-fork`. If an older environment still has
   `pyqtdarktheme` installed, run `pip uninstall pyqtdarktheme` and then reinstall the app
   (**Check for Updates** does this for you).
-- There's no standalone macOS build yet; on a Mac, run from source (Option B). The Mac desktop
-  shortcut is a `.command` file, so it opens a Terminal window next to the app, like
-  `Launch_Mac.command` does.
+- There's no standalone macOS build yet; on a Mac, run from source (Option B). The desktop
+  shortcut there is a small `Apera Meter GUI.app` with the meter icon that starts the app without
+  a Terminal window.
+- When the app runs without a console (the launchers, the desktop shortcut, the standalone app),
+  its messages and any errors go to `app.log` in the data folder. Look there if something goes
+  wrong.
 
 ## Development
 

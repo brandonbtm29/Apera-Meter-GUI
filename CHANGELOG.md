@@ -6,6 +6,23 @@ bump the first. The format is based on [Keep a Changelog](https://keepachangelog
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-15
+
+### Added
+- The version number is shown in the bottom-right corner. A few seconds after start (and once a
+  day while the app runs) it checks GitHub; if a newer release is out, it turns amber and reads
+  "v1.3.0 – v1.4.0 available". Click it to see what changed and update.
+- When the app has no console (launchers, desktop shortcut, standalone app), its messages and
+  errors are written to `app.log` in the data folder.
+
+### Changed
+- `Launch_Windows.bat` and `Launch_Mac.command` no longer leave a console or Terminal window open
+  while the app runs. They still show an error and wait if something is missing.
+- The macOS desktop shortcut is now an `Apera Meter GUI.app` with the meter icon that starts the
+  app without Terminal (it replaces the `.command` file from 1.2.0).
+- An existing desktop shortcut is refreshed when the app starts, so its icon and target stay
+  current after updates or if the app folder moves. The app never creates one on its own.
+
 ## [1.2.0] - 2026-10-15
 
 ### Added
@@ -87,7 +104,8 @@ with Claude (Anthropic).
 - Personal email addresses, home-folder paths and machine names were removed from the files and
   the git history. Commit IDs before this release changed as a result.
 
-[Unreleased]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v0.1.0...v1.1.0
 [0.1.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/releases/tag/v0.1.0
