@@ -42,6 +42,25 @@ def check_inputs():
         sys.exit('PyTorch is not installed. Run: python -m pip install -e ".[ocr,dev]"')
 
 
+def torchvision_extensions(sep):
+    """--add-binary arguments for torchvision's compiled ops (_C_stable, image_stable).
+
+    torchvision loads them with torch.ops.load_library rather than importing them, so PyInstaller
+    doesn't see them; without them the app fails at start with
+    "operator torchvision::nms does not exist".
+    """
+    import torchvision
+
+    folder = Path(torchvision.__file__).parent
+    args = []
+    for pattern in ("*.pyd", "*.so"):
+        for lib in sorted(folder.glob(pattern)):
+            args += ["--add-binary", f"{lib}{sep}torchvision"]
+    if not args:
+        sys.exit(f"No compiled torchvision extensions found in {folder}.")
+    return args
+
+
 def build():
     sep = os.pathsep  # PyInstaller's SOURCE<sep>DEST separator for --add-data
     cmd = [
@@ -61,10 +80,7 @@ def build():
         f"{ICON}{sep}.",
         "--collect-data",
         "qdarktheme",
-        # Newer torchvision ships _C_stable instead of _C, which PyInstaller's hook misses;
-        # without it the app fails at start with "operator torchvision::nms does not exist".
-        "--collect-binaries",
-        "torchvision",
+        *torchvision_extensions(sep),
         "--exclude-module",
         "PySide6",
         "--exclude-module",

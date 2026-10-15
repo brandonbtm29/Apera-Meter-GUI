@@ -35,7 +35,14 @@ jobs:
         run: |
           $env:UAKRON_APP_DATA_DIR = "$env:RUNNER_TEMP\apera-data"
           $env:APERA_SELF_TEST_REPORT = "$env:RUNNER_TEMP\self-test.json"
-          $p = Start-Process -FilePath "dist\Apera Meter GUI\Apera Meter GUI.exe" -ArgumentList "--self-test" -Wait -PassThru
+          $p = Start-Process -FilePath "dist\Apera Meter GUI\Apera Meter GUI.exe" -ArgumentList "--self-test" -PassThru
+          $null = $p.Handle  # keep a handle so ExitCode is available afterwards
+          # A crash at start shows an error dialog that never closes on its own, so don't wait forever.
+          if (-not $p.WaitForExit(180000)) {
+            $title = (Get-Process -Id $p.Id -ErrorAction SilentlyContinue).MainWindowTitle
+            Stop-Process -Id $p.Id -Force
+            throw "Self-test did not finish within 3 minutes (window: '$title')"
+          }
           Get-Content $env:APERA_SELF_TEST_REPORT
           if ($p.ExitCode -ne 0) { throw "Self-test failed with exit code $($p.ExitCode)" }
       - uses: actions/upload-artifact@v6

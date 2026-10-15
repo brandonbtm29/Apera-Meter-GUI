@@ -3788,7 +3788,7 @@ def _self_test(app, window):
             code = 2
         report["exit_code"] = code
         text = json.dumps(report, indent=2)
-        print(text)
+        print(text, flush=True)
         out = os.environ.get("APERA_SELF_TEST_REPORT")
         if out:
             with open(out, "w", encoding="utf-8") as f:
