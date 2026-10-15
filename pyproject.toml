@@ -22,8 +22,8 @@ classifiers = [
 ]
 dependencies = [
     "PyQt6>=6.5",
-    # Unmaintained; pip installs 2.1.0 on Python 3.11 and 0.1.7 on 3.12+. The app works with both.
-    "pyqtdarktheme",
+    # Maintained fork of pyqtdarktheme (same "qdarktheme" import). Uninstall pyqtdarktheme first.
+    "pyqtdarktheme-fork>=2.3.6",
     "pyserial>=3.5",
     "matplotlib>=3.7",
     "numpy>=1.24",
