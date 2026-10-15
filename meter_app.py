@@ -2151,12 +2151,21 @@ class SettingsTab(QWidget):
                 restart_cb=self.parent_app.restart_app,
             )
         )
-        btn_restart = QPushButton("🔄 Restart Application")
-        btn_restart.setStyleSheet(
-            "background-color: #8e44ad; color: white; padding: 10px; font-weight: bold;"
+        update_row = QHBoxLayout()
+        self.lbl_version = QLabel(f"Version {__version__}")
+        self.lbl_version.setStyleSheet("font-weight: bold;")
+        update_row.addWidget(self.lbl_version)
+        self.lbl_update_status = QLabel("")
+        self.lbl_update_status.setStyleSheet("color: #9aa0a6;")
+        update_row.addWidget(self.lbl_update_status, 1)
+        self.btn_update = QPushButton("⬆️ Check for Updates")
+        self.btn_update.setToolTip("Look for a newer release on GitHub and install it")
+        self.btn_update.setStyleSheet(
+            "background-color: #8e44ad; color: white; padding: 8px 16px; font-weight: bold;"
         )
-        btn_restart.clicked.connect(self.parent_app.restart_app)
-        l_app_inner.addWidget(btn_restart)
+        self.btn_update.clicked.connect(self.parent_app.check_for_updates)
+        update_row.addWidget(self.btn_update)
+        l_app_inner.addLayout(update_row)
         l_global.addWidget(gb_app)
 
         # --- Global Saving Settings ---
@@ -2830,13 +2839,15 @@ class OCRFeedTab(QWidget):
 class MeterApp(QMainWindow):
     ocr_readings_signal = pyqtSignal(list)
     ocr_frame_signal = pyqtSignal(object, object)
+    update_check_finished = pyqtSignal(object, object)  # (Release or None, error message or None)
+    update_install_finished = pyqtSignal(object, str)  # (error message or None, log text)
 
     def __init__(self):
         super().__init__()
         import os
         import json
 
-        self.setWindowTitle("Apera Dual-Meter Control Center (PyQt6)")
+        self.setWindowTitle(f"Apera Meter GUI {__version__}")
         self.resize(1400, 800)
         self.tabs = QTabWidget()
 
@@ -3143,6 +3154,134 @@ class MeterApp(QMainWindow):
                 self.meter2.mid_splitter.restoreState(QByteArray.fromHex(state2_mid.encode()))
         except Exception:
             pass
+
+    # --- Updates -------------------------------------------------------------
+    def check_for_updates(self, checked=False):
+        """Ask GitHub for the newest release (in the background) and offer to install it."""
+        import updater
+
+        tab = self.settings_tab
+        tab.btn_update.setEnabled(False)
+        tab.lbl_update_status.setText("Checking GitHub…")
+
+        def worker():
+            try:
+                self.update_check_finished.emit(updater.fetch_latest_release(), None)
+            except updater.UpdateError as e:
+                self.update_check_finished.emit(None, str(e))
+            except Exception as e:
+                self.update_check_finished.emit(None, f"Unexpected error while checking: {e}")
+
+        if not getattr(self, "_update_signals_connected", False):
+            self.update_check_finished.connect(self._on_update_checked)
+            self.update_install_finished.connect(self._on_update_installed)
+            self._update_signals_connected = True
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_update_checked(self, release, error):
+        import updater
+
+        tab = self.settings_tab
+        tab.btn_update.setEnabled(True)
+        if error:
+            tab.lbl_update_status.setText("Couldn't check for updates.")
+            QMessageBox.warning(self, "Check for Updates", error)
+            return
+        if not updater.is_newer(release.tag, __version__):
+            tab.lbl_update_status.setText(f"Up to date (latest release is {release.tag}).")
+            QMessageBox.information(
+                self, "Check for Updates", f"You have the latest version ({__version__})."
+            )
+            return
+
+        tab.lbl_update_status.setText(f"{release.tag} is available.")
+        kind = updater.install_kind(script_dir)
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Update available: {release.name}")
+        dialog.resize(640, 480)
+        lay = QVBoxLayout(dialog)
+        lay.addWidget(QLabel(f"<b>{release.name}</b> is available. You have version {__version__}."))
+        notes = QTextEdit()
+        notes.setReadOnly(True)
+        notes.setMarkdown(release.notes or "No release notes.")
+        lay.addWidget(notes, 1)
+        if kind == "git":
+            hint = (
+                "Updating downloads the new version, reinstalls its Python packages and restarts "
+                "the app. Your data and settings are not touched."
+            )
+            action = "⬆️ Update and Restart"
+        else:
+            hint = "Download the new version from the release page, then replace this copy with it."
+            action = "🌐 Open Download Page"
+        info = QLabel(hint)
+        info.setWordWrap(True)
+        lay.addWidget(info)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        btn_later = QPushButton("Later")
+        btn_go = QPushButton(action)
+        btn_go.setDefault(True)
+        btn_go.setStyleSheet("background-color: #8e44ad; color: white; padding: 6px 14px; font-weight: bold;")
+        btn_later.clicked.connect(dialog.reject)
+        btn_go.clicked.connect(dialog.accept)
+        row.addWidget(btn_later)
+        row.addWidget(btn_go)
+        lay.addLayout(row)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        if kind != "git":
+            from PyQt6.QtCore import QUrl
+            from PyQt6.QtGui import QDesktopServices
+
+            QDesktopServices.openUrl(QUrl(release.url))
+            return
+
+        if (self.meter1.is_recording or self.meter2.is_recording) and QMessageBox.question(
+            self,
+            "Recording in progress",
+            "A meter is still recording. Updating restarts the app and stops the recording.\n\n"
+            "Update anyway?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self._install_update(release)
+
+    def _install_update(self, release):
+        import updater
+
+        from PyQt6.QtWidgets import QProgressDialog
+
+        self._update_progress = QProgressDialog(f"Installing {release.tag}…", None, 0, 0, self)
+        self._update_progress.setWindowTitle("Updating")
+        self._update_progress.setMinimumDuration(0)
+        self._update_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self._update_progress.show()
+        self._pending_release = release
+
+        def worker():
+            lines = []
+            try:
+                updater.update_git_clone(script_dir, release.tag, log=lines.append)
+                self.update_install_finished.emit(None, "\n".join(lines))
+            except updater.UpdateError as e:
+                self.update_install_finished.emit(str(e), "\n".join(lines))
+            except Exception as e:
+                self.update_install_finished.emit(f"Unexpected error while updating: {e}", "\n".join(lines))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_update_installed(self, error, log_text):
+        self._update_progress.close()
+        tag = self._pending_release.tag
+        if error:
+            box = QMessageBox(QMessageBox.Icon.Warning, "Update failed", error, parent=self)
+            box.setDetailedText(log_text)
+            box.exec()
+            return
+        self.settings_tab.lbl_update_status.setText(f"Updated to {tag}; restarting…")
+        QMessageBox.information(self, "Update installed", f"Updated to {tag}. The app will now restart.")
+        self.restart_app()
 
     def restart_app(self, checked=False):
         import sys
