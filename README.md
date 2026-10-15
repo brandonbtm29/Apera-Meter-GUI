@@ -38,6 +38,7 @@ are needed every few seconds for hours and nobody should have to copy numbers of
   label images for retraining.
 - **Shared settings**: keep settings in a synced folder so several computers behave the same.
 - **One-click updates**: **Check for Updates** on the Settings tab installs the newest release.
+- **Desktop shortcut**: **Create Desktop Shortcut** on the Settings tab puts the app on your desktop.
 
 ## Quick start
 
@@ -49,7 +50,8 @@ are needed every few seconds for hours and nobody should have to copy numbers of
 3. Open the `Apera Meter GUI` folder and double-click `Apera Meter GUI.exe`. Windows SmartScreen
    may warn that the app is unrecognised (it isn't code-signed); choose **More info → Run anyway**.
 
-The OCR model is included. Settings are kept in the same folder as the `.exe`.
+The OCR model is included. Settings are kept in the same folder as the `.exe`. To get a desktop
+icon, open **Settings → Create Desktop Shortcut**.
 
 ### Option B: run from source (Windows or macOS)
 
@@ -74,7 +76,8 @@ Leave out `[ocr]` (i.e. `pip install -e .`) to skip PyTorch, which is a large do
 app still runs; only the camera reading is unavailable.
 
 The app opens without a meter attached, so you can look around first. Plug a meter in, click
-**Refresh Ports**, then **Connect** on the Meter 1 tab.
+**Refresh Ports**, then **Connect** on the Meter 1 tab. For a desktop icon, use
+**Settings → Create Desktop Shortcut**.
 
 > If Windows shows no COM port for the meter, install the USB driver that comes with Apera's
 > PC Link software.
@@ -86,7 +89,7 @@ The app opens without a meter attached, so you can look around first. Plug a met
 | **Meter 1 / Meter 2** tabs | **Connect**, **Start Recording**, **Save Log to Excel**, **Quick Save** (overwrite the auto-save file), **Download Raw Memory**, **Sync Meter Time**, **Recover Session**, **Clear Data** |
 | Right panel | Connection, metadata tokens for file names, save/auto-save/auto-stop, experiment notes |
 | Left panel | Axis limits, graph units, time vs. duration axis, event log |
-| **Settings** tab | Save folder and file-name template for both meters, Discord alerts, settings folder, version and **Check for Updates** |
+| **Settings** tab | Save folder and file-name template for both meters, Discord alerts, settings folder, version, **Create Desktop Shortcut** and **Check for Updates** |
 | **Live OCR Feed** tab | Camera on/off, draw the reading area, OCR filters and logging |
 | **Dataset Curation** tab | Review and label camera crops for retraining the OCR model |
 
@@ -153,6 +156,7 @@ webhook URL can post to that channel.
 | `dataset_curation_tab.py` | The labelling tab |
 | `settings_location.py` | Where settings are stored (shared with the lab's other apps) |
 | `updater.py` | Checks GitHub for a newer release and updates a git clone |
+| `shortcuts.py` | Creates the desktop shortcut (Windows `.lnk`, macOS `.command`, Linux `.desktop`) |
 | `Scripts/` | Build script, log repair (`cleanup_1000x_gaps.py`), screenshot generator |
 
 ## Good to know
@@ -168,7 +172,9 @@ webhook URL can post to that channel.
 - The dark theme comes from `pyqtdarktheme-fork`. If an older environment still has
   `pyqtdarktheme` installed, run `pip uninstall pyqtdarktheme` and then reinstall the app
   (**Check for Updates** does this for you).
-- There's no standalone macOS build yet; on a Mac, run from source (Option B).
+- There's no standalone macOS build yet; on a Mac, run from source (Option B). The Mac desktop
+  shortcut is a `.command` file, so it opens a Terminal window next to the app, like
+  `Launch_Mac.command` does.
 
 ## Development
 

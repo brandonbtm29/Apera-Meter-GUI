@@ -18,6 +18,7 @@ Dual-meter PyQt6 app for Apera EC400S / EC8500 conductivity meters (serial auto-
 - `ocr_model.py`: `MeterCRNN`, the deployed model definition. A copy lives in `LCD-Digit-CRNN`; keep the two in sync if the architecture changes.
 - `ocr_pipeline.py`: preprocessing and inference; loads `meter_ocr_model.pt` from this folder via `__file__`.
 - `dataset_curation_tab.py`: labelling UI; writes crops to `Sessions/Master_Dataset/` in the data folder (the training set for LCD-Digit-CRNN).
+- `shortcuts.py`: Settings → Create Desktop Shortcut (Windows .lnk via PowerShell/WScript.Shell, macOS .command, Linux .desktop; no Qt).
 - `updater.py`: GitHub release check and git-clone update behind Settings → Check for Updates (no Qt; tested in `tests/test_updater.py`).
 - `Scripts/`: `build_app.py`, `cleanup_1000x_gaps.py`, `make_screenshot.py` (renders `docs/screenshot.png` with fake data), `preview.py`, `test.py` (app helpers only).
 - `tests/`: headless pytest smoke tests.

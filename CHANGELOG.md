@@ -6,6 +6,14 @@ bump the first. The format is based on [Keep a Changelog](https://keepachangelog
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-15
+
+### Added
+- **Create Desktop Shortcut** button on the Settings tab, next to Check for Updates. On Windows it
+  makes a shortcut with the meter icon (no console window, and it finds OneDrive desktops); on a
+  Mac it puts an `Apera Meter GUI.command` launcher on the desktop. The shortcut keeps working
+  after updates; pressing the button again replaces it.
+
 ## [1.1.0] - 2026-10-14
 
 The app is now available as a standalone Windows download and can update itself. (Version
@@ -79,6 +87,7 @@ with Claude (Anthropic).
 - Personal email addresses, home-folder paths and machine names were removed from the files and
   the git history. Commit IDs before this release changed as a result.
 
-[Unreleased]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v0.1.0...v1.1.0
 [0.1.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/releases/tag/v0.1.0
