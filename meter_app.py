@@ -3604,10 +3604,51 @@ def create_app(argv=None):
     return app
 
 
-def main():
-    app = create_app()
+def _self_test(app, window):
+    """Check that the packaged app starts, then exit: 0 = OK, 1 = window broken, 2 = OCR model missing.
+
+    Used by the release build (``--self-test``); never touches the meters or saves anything.
+    """
+    import json
+
+    from PyQt6.QtCore import QTimer
+
+    def finish():
+        tabs = [window.tabs.tabText(i) for i in range(window.tabs.count())]
+        ocr = getattr(window, "ocr_pipeline", None)
+        report = {
+            "version": __version__,
+            "frozen": bool(getattr(sys, "frozen", False)),
+            "tabs": tabs,
+            "ocr_model_loaded": getattr(ocr, "model", None) is not None,
+            "data_dir": DATA_DIR,
+        }
+        code = 0
+        if not {"Settings", "Meter 1", "Meter 2"} <= set(tabs):
+            code = 1
+        elif not report["ocr_model_loaded"]:
+            code = 2
+        report["exit_code"] = code
+        text = json.dumps(report, indent=2)
+        print(text)
+        out = os.environ.get("APERA_SELF_TEST_REPORT")
+        if out:
+            with open(out, "w", encoding="utf-8") as f:
+                f.write(text)
+        os._exit(code)  # skip the close prompts and background threads
+
+    QTimer.singleShot(3000, finish)
+    return app.exec()
+
+
+def main(argv=None):
+    argv = list(sys.argv if argv is None else argv)
+    self_test = "--self-test" in argv
+    app = create_app([a for a in argv if a != "--self-test"])
     window = MeterApp()
     window.show()
+    if self_test:
+        sys.exit(_self_test(app, window))
     sys.exit(app.exec())
 
 

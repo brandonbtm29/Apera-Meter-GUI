@@ -42,3 +42,22 @@ def test_main_window_builds_and_closes(monkeypatch):
 @pytest.mark.parametrize("module", ["ocr_pipeline", "dataset_curation_tab", "settings_location"])
 def test_helper_modules_import(module):
     __import__(module)
+
+
+def test_self_test_flag_reports_and_exits(tmp_path):
+    """`--self-test` (used to check release builds) starts the app, writes a report and exits."""
+    import json
+    import subprocess
+    import sys
+
+    from conftest import REPO
+
+    report = tmp_path / "report.json"
+    env = dict(os.environ, APERA_SELF_TEST_REPORT=str(report), UAKRON_APP_DATA_DIR=str(tmp_path / "data"))
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, str(REPO / "meter_app.py"), "--self-test"], env=env, timeout=120, check=False
+    )
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert {"Settings", "Meter 1", "Meter 2"} <= set(data["tabs"])
+    # 0 = OCR model loaded; 2 = no model (e.g. CI without Git LFS or without PyTorch)
+    assert result.returncode == data["exit_code"] == (0 if data["ocr_model_loaded"] else 2)
