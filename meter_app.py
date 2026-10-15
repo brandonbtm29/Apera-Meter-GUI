@@ -139,6 +139,7 @@ class CollapsibleBox(QWidget):
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(0)
 
+        title = title.replace("&", "&&")  # "&" would otherwise become a keyboard-shortcut underline
         self.btn_toggle = QPushButton(f"▼ {title}")
         self.btn_toggle.setStyleSheet(
             "text-align: left; font-weight: bold; padding: 5px; background-color: transparent; border: none;"
@@ -404,13 +405,13 @@ class MeterController(QWidget):
         self.xaxis_combo.addItems(["X-Axis: DateTime", "X-Axis: Duration (min)"])
         self.xaxis_combo.setCurrentText(self.config.get(f"xaxis_{self.meter_id}", "X-Axis: DateTime"))
         self.xaxis_combo.currentTextChanged.connect(lambda _: self.apply_limits())
-        form_layout.addRow("Plot Mode:", self.xaxis_combo)
+        form_layout.addRow(self.xaxis_combo)  # the items say what they are; a label clipped them
 
         self.unit_combo = QComboBox()
         self.unit_combo.addItems(["Graph Unit: uS/cm", "Graph Unit: mS/cm"])
         self.unit_combo.setCurrentText(self.config.get(f"graph_unit_{self.meter_id}", "Graph Unit: uS/cm"))
         self.unit_combo.currentTextChanged.connect(self.on_unit_changed)
-        form_layout.addRow("Unit:", self.unit_combo)
+        form_layout.addRow(self.unit_combo)
 
         l_axis.addLayout(form_layout)
 
@@ -438,6 +439,9 @@ class MeterController(QWidget):
         left_scroll = QScrollArea()
         left_scroll.setWidget(left_widget)
         left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )  # side panels scroll vertically only
 
         # Middle Panel (Plot & Table)
         self.mid_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -463,6 +467,7 @@ class MeterController(QWidget):
         self.table.setColumnCount(len(self.columns))
         self.table.setHorizontalHeaderLabels(self.columns)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(0, 160)  # room for "YYYY-MM-DD HH:MM:SS"; saved widths still apply
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.mid_splitter.addWidget(self.table)
 
@@ -596,8 +601,9 @@ class MeterController(QWidget):
         right_scroll = QScrollArea()
         right_scroll.setWidget(right_widget)
         right_scroll.setWidgetResizable(True)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        left_scroll.setMinimumWidth(250)
+        left_scroll.setMinimumWidth(270)
         right_scroll.setMinimumWidth(360)
 
         # Add to main splitter
@@ -1753,6 +1759,7 @@ class MeterController(QWidget):
         self.ax.tick_params(colors="white")
 
         self.ax2.set_ylabel("d(log C)/dt", color="#9b59b6")
+        self.ax2.yaxis.set_label_position("right")  # clear() moves it left, on top of the cond. ticks
         self.ax2.tick_params(colors="white")
 
         self.ax_temp.set_ylabel("Temp (°C)", color="#e74c3c")
@@ -2124,7 +2131,7 @@ class SettingsTab(QWidget):
         right_layout = QVBoxLayout()
         right_layout.addWidget(self.stack)
 
-        # 1. Global & Application Settings
+        # 1. General (global & application settings)
         page_global = QWidget()
         l_global = QVBoxLayout(page_global)
 
@@ -2178,8 +2185,8 @@ class SettingsTab(QWidget):
         self.lbl_folder = QLabel(self.parent_app.meter1.config.get("global_default_save_folder", "Data"))
         btn_folder = QPushButton("Browse...")
         btn_folder.clicked.connect(self.choose_global_dir)
-        dir_layout.addWidget(QLabel("Default Global Directory:"))
-        dir_layout.addWidget(self.lbl_folder)
+        dir_layout.addWidget(QLabel("Default save folder:"))
+        dir_layout.addWidget(self.lbl_folder, 1)
         dir_layout.addWidget(btn_folder)
         l_save_inner.addLayout(dir_layout)
 
@@ -2212,7 +2219,7 @@ class SettingsTab(QWidget):
 
         l_global.addStretch()
 
-        self.sidebar.addItem("🌍 Global & Application Settings")
+        self.sidebar.addItem("🌍 General")
         self.stack.addWidget(page_global)
 
         # 2. Meter 1 Settings
@@ -2409,9 +2416,11 @@ class OCRFeedTab(QWidget):
         scroll_area.setWidgetResizable(True)
         scroll_area.setWidget(left_panel)
         scroll_area.setFixedWidth(350)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         splitter.addWidget(scroll_area)
 
         def make_collapsible(title, parent_layout, default_collapsed=False):
+            title = title.replace("&", "&&")  # show "&" literally, not as a shortcut underline
             btn_toggle = QPushButton(f"▼ {title}")
             btn_toggle.setCheckable(True)
             btn_toggle.setStyleSheet(
@@ -2850,6 +2859,7 @@ class MeterApp(QMainWindow):
         self.setWindowTitle(f"Apera Meter GUI {__version__}")
         self.resize(1400, 800)
         self.tabs = QTabWidget()
+        self.tabs.setStyleSheet("QTabBar::tab { padding: 6px 16px; }")
 
         self.config_path = os.path.join(CONFIG_DIR, "config.json")
         self.shared_config = {}
@@ -2888,7 +2898,7 @@ class MeterApp(QMainWindow):
         self.ocr_warn_streams_chk.setChecked(self.shared_config.get("ocr_warn_streams", True))
         self.ocr_warn_streams_chk.stateChanged.connect(self._save_ocr_config)
 
-        self.ocr_dual_mode_chk = QCheckBox("Require CNN & CV Consensus (Dual-Mode)")
+        self.ocr_dual_mode_chk = QCheckBox("Require CNN && CV Consensus (Dual-Mode)")
         self.ocr_dual_mode_chk.setChecked(self.shared_config.get("ocr_dual_mode", True))
         self.ocr_dual_mode_chk.setToolTip("If enabled, requires both CNN and Classic algorithms to agree.")
         self.ocr_dual_mode_chk.stateChanged.connect(self._save_ocr_config)
