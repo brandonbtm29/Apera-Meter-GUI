@@ -2171,6 +2171,11 @@ class SettingsTab(QWidget):
             "background-color: #8e44ad; color: white; padding: 8px 16px; font-weight: bold;"
         )
         self.btn_update.clicked.connect(self.parent_app.check_for_updates)
+        self.btn_shortcut = QPushButton("🖥️ Create Desktop Shortcut")
+        self.btn_shortcut.setToolTip("Put a shortcut to this app on the desktop")
+        self.btn_shortcut.setStyleSheet("padding: 8px 16px; font-weight: bold;")
+        self.btn_shortcut.clicked.connect(self.parent_app.create_desktop_shortcut)
+        update_row.addWidget(self.btn_shortcut)
         update_row.addWidget(self.btn_update)
         l_app_inner.addLayout(update_row)
         l_global.addWidget(gb_app)
@@ -3166,6 +3171,24 @@ class MeterApp(QMainWindow):
                 self.meter2.mid_splitter.restoreState(QByteArray.fromHex(state2_mid.encode()))
         except Exception:
             pass
+
+    # --- Desktop shortcut ----------------------------------------------------
+    def create_desktop_shortcut(self, checked=False):
+        import shortcuts
+
+        try:
+            path = shortcuts.create_desktop_shortcut(script_dir)
+        except shortcuts.ShortcutError as e:
+            QMessageBox.warning(self, "Create Desktop Shortcut", str(e))
+            return
+        except Exception as e:
+            QMessageBox.warning(self, "Create Desktop Shortcut", f"Unexpected error: {e}")
+            return
+        QMessageBox.information(
+            self,
+            "Create Desktop Shortcut",
+            f"Shortcut created on the desktop:\n{path}\n\nIt keeps working after updates.",
+        )
 
     # --- Updates -------------------------------------------------------------
     def check_for_updates(self, checked=False):
