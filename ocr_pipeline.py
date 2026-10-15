@@ -3,7 +3,6 @@ import numpy as np
 import threading
 import time
 import os
-import sys
 
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "meter_ocr_model.pt")
 # ROI boxes are settings: stored in the app's settings folder (see settings_location.py).
@@ -82,7 +81,7 @@ class MeterOCR:
     def load_rois(self):
         try:
             if os.path.exists(ROIS_PATH):
-                with open(ROIS_PATH, "r") as f:
+                with open(ROIS_PATH) as f:
                     data = json.load(f)
                     for k in self.rois.keys():
                         if k in data and data[k] is not None:
@@ -172,7 +171,7 @@ class MeterOCR:
                     try:
                         s_i = float(str(arr[i]).replace(".", ""))
                         s_j = float(str(arr[j]).replace(".", ""))
-                    except:
+                    except Exception:
                         s_i, s_j = arr[i], arr[j]
 
                     diff = abs(s_i - s_j)
@@ -305,14 +304,14 @@ class MeterOCR:
                                 cb(readings, raw_roi_imgs)
                             else:
                                 cb(readings)
-                        except:
+                        except Exception:
                             pass
                 last_emit = now
 
             for cb in self.frame_callbacks:
                 try:
                     cb(display_frame.copy(), roi_imgs)
-                except Exception as e:
+                except Exception:
                     pass
 
             time.sleep(0.1)  # ~10 FPS limit
@@ -410,7 +409,7 @@ class MeterOCR:
                     s = raw_str[:i] + "." + raw_str[i:]
                 try:
                     possible_ms_values.append(float(s))
-                except:
+                except Exception:
                     pass
 
             best_val = min(possible_ms_values, key=lambda x: abs(x - last_serial_ms))
@@ -422,12 +421,11 @@ class MeterOCR:
         except Exception:
             try:
                 return float(ocr_val)
-            except:
+            except Exception:
                 return 0.0
 
     def process_frame(self, frame):
         fh, fw, _ = frame.shape
-        readings = [None, None]
         parsed_vals = {}
 
         roi_imgs, roi_metadata = self.extract_crops(frame)
@@ -580,7 +578,7 @@ class MeterOCR:
         from operator import itemgetter
 
         regions = []
-        for k, g in groupby(enumerate(digit_cols), lambda ix: ix[0] - ix[1]):
+        for _k, g in groupby(enumerate(digit_cols), lambda ix: ix[0] - ix[1]):
             group = list(map(itemgetter(1), g))
             if group[-1] - group[0] > 5:  # minimum width of a digit (a '1' can be very thin)
                 regions.append((group[0], group[-1]))
@@ -600,7 +598,7 @@ class MeterOCR:
         # Find the decimal point by looking at the gaps between digits
         max_gap_pixels = 0
         decimal_idx = -1
-        for i, (x1, x2) in enumerate(regions):
+        for i, (x1, _x2) in enumerate(regions):
             if i > 0:
                 prev_x2 = regions[i - 1][1]
                 gap_roi = thresh[max(0, global_y2 - 30) : global_y2, prev_x2:x1]
@@ -656,7 +654,7 @@ class MeterOCR:
 
         try:
             return float(result_str)
-        except:
+        except Exception:
             return 0.0
 
     def _identify_digit(self, digit_mask):

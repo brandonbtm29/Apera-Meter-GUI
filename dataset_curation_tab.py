@@ -10,7 +10,6 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QLineEdit,
     QMessageBox,
-    QComboBox,
     QStackedWidget,
     QListWidget,
     QListWidgetItem,
@@ -19,7 +18,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QSplitter,
 )
-from PyQt6.QtGui import QPixmap, QImage, QIcon, QColor
+from PyQt6.QtGui import QIcon, QColor
 from PyQt6.QtCore import Qt, QSize
 
 
@@ -280,7 +279,8 @@ class DatasetCurationTab(QWidget):
         reply = QMessageBox.question(
             self,
             "Confirm Delete",
-            f"Are you sure you want to completely delete this dataset/calibration folder and all its contents?\n\n{session_dir}",
+            "Are you sure you want to completely delete this dataset/calibration folder "
+            f"and all its contents?\n\n{session_dir}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -380,7 +380,7 @@ class DatasetCurationTab(QWidget):
                     meter_id = parts[3]
                     lag_ms = (frame_ts - serial_ts) * 1000.0
                     dt_str = datetime.fromtimestamp(serial_ts).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-                except:
+                except Exception:
                     serial_ts, frame_ts, meter_id, lag_ms, dt_str = 0.0, 0.0, "?", 0.0, "Unknown"
 
                 # Column 0: Date/Time
@@ -438,7 +438,6 @@ class DatasetCurationTab(QWidget):
         super().showEvent(event)
 
     def add_to_master_dataset(self):
-        import uuid
         import shutil
 
         selected_items = self.table_images.selectedItems()
@@ -464,7 +463,8 @@ class DatasetCurationTab(QWidget):
                 QMessageBox.warning(
                     self,
                     "Label Required",
-                    f"Row {row + 1} has no label (Unknown). Please manually assign it a label using the text box and 'Save Label' button before adding to the master dataset.",
+                    f"Row {row + 1} has no label (Unknown). Please manually assign it a label "
+                    "using the text box and 'Save Label' button before adding to the master dataset.",
                 )
                 return
 
@@ -625,7 +625,8 @@ class DatasetCurationTab(QWidget):
                         QMessageBox.warning(
                             self,
                             "Mismatch",
-                            "All selected rows must belong to the same serial measurement (same serial_ts and meter_id).",
+                            "All selected rows must belong to the same serial measurement "
+                            "(same serial_ts and meter_id).",
                         )
                         return
 
@@ -652,7 +653,8 @@ class DatasetCurationTab(QWidget):
         reply = QMessageBox.question(
             self,
             "Confirm Lag Calibration",
-            f"Calculate median lag from {n} selected frame(s).\nAdd {lag_ms:.1f} ms to Meter {base_meter_id}'s hardware lag measurements?",
+            f"Calculate median lag from {n} selected frame(s).\n"
+            f"Add {lag_ms:.1f} ms to Meter {base_meter_id}'s hardware lag measurements?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
 

@@ -9,7 +9,7 @@ files = glob.glob(os.path.join(backup_dir, "*.csv"))
 if files:
     for file in files:
         print(f"\n--- {os.path.basename(file)} ---")
-        with open(file, "r", encoding="utf-8") as f:
+        with open(file, encoding="utf-8") as f:
             reader = csv.reader(f)
             header = next(reader, None)
             print(header)

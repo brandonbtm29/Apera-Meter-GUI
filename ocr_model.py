@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
-import torchvision.transforms as transforms
 import torchvision.models as models
-from PIL import Image
 
 CHARS = "0123456789."
 PAD_IDX = 11
@@ -33,7 +31,7 @@ def tensor_to_string(tensor):
 
 class MeterCRNN(nn.Module):
     def __init__(self, freeze_backbone=True):
-        super(MeterCRNN, self).__init__()
+        super().__init__()
 
         # Winning Architecture: ResNet-34, Heavy Downsampling, 0.3 Dropout (Phase 3 Champion)
         resnet = models.resnet34(weights=None)

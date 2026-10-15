@@ -33,7 +33,6 @@ import serial.tools.list_ports
 import threading
 import time
 import math
-import threading
 import requests
 import datetime
 import csv
@@ -43,16 +42,12 @@ from openpyxl.styles import Font, Alignment
 import pandas as pd
 import serial
 import serial.tools.list_ports
-import time
-import threading
-import datetime
 import struct
-import requests
 
 # Import torch/ocr before QApplication is created to prevent OpenMP/MKL deadlocks on Windows
 try:
-    import torch
-    from ocr_pipeline import MeterOCR
+    import torch  # noqa: F401 - imported early on purpose, see comment above
+    from ocr_pipeline import MeterOCR  # noqa: F401
 except ImportError:
     pass
 
@@ -80,7 +75,6 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QFrame,
     QDialog,
-    QGroupBox,
     QGridLayout,
     QListWidget,
     QStackedWidget,
@@ -90,7 +84,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
-from PyQt6.QtGui import QFont, QColor, QAction
+from PyQt6.QtGui import QFont
 
 import qdarktheme
 
@@ -111,7 +105,7 @@ class NumericTableWidgetItem(QTableWidgetItem):
                 return float(self.text()) < float(other.text())
             except ValueError:
                 return self.text() < other.text()
-        return super(NumericTableWidgetItem, self).__lt__(other)
+        return super().__lt__(other)
 
 
 class WorkerSignals(QObject):
@@ -190,9 +184,9 @@ class MeterController(QWidget):
             self.app_controller.shared_config = {}
             if os.path.exists(self.config_path):
                 try:
-                    with open(self.config_path, "r") as f:
+                    with open(self.config_path) as f:
                         self.app_controller.shared_config = json.load(f)
-                except:
+                except Exception:
                     pass
 
         self.config = self.app_controller.shared_config if self.app_controller else {}
@@ -607,7 +601,7 @@ class MeterController(QWidget):
         try:
             with open(self.config_path, "w") as f:
                 json.dump(self.config, f, indent=4)
-        except:
+        except Exception:
             pass
 
     def save_notes(self):
@@ -827,9 +821,7 @@ class MeterController(QWidget):
         return s
 
     def toggle_record(self, checked=False):
-        import datetime
 
-        now_str = datetime.datetime.now().strftime("%H:%M:%S")
         if not self.is_recording:
             self.is_recording = True
             self.session_start_time = None
@@ -859,12 +851,14 @@ class MeterController(QWidget):
             if self.meter_id == 1 and hasattr(self.parent_app, "chk_record_m1"):
                 self.parent_app.chk_record_m1.setChecked(self.is_recording)
                 self.parent_app.chk_record_m1.setStyleSheet(
-                    f"font-weight: bold; margin-left: 10px; color: {'#2ecc71' if self.is_recording else '#e74c3c'};"
+                    "font-weight: bold; margin-left: 10px; "
+                    f"color: {'#2ecc71' if self.is_recording else '#e74c3c'};"
                 )
             elif self.meter_id == 2 and hasattr(self.parent_app, "chk_record_m2"):
                 self.parent_app.chk_record_m2.setChecked(self.is_recording)
                 self.parent_app.chk_record_m2.setStyleSheet(
-                    f"font-weight: bold; margin-left: 10px; color: {'#2ecc71' if self.is_recording else '#e74c3c'};"
+                    "font-weight: bold; margin-left: 10px; "
+                    f"color: {'#2ecc71' if self.is_recording else '#e74c3c'};"
                 )
 
     def _save_hardware_lag(self, val):
@@ -878,7 +872,7 @@ class MeterController(QWidget):
             self.config[f"auto_temp_{self.meter_id}"] = self.auto_temp_chk.isChecked()
             self.config[f"auto_deriv_{self.meter_id}"] = self.auto_deriv_chk.isChecked()
             self.save_config()
-        except:
+        except Exception:
             pass
         self.plot_data()
 
@@ -967,9 +961,9 @@ class MeterController(QWidget):
             return []
         sessions = []
         try:
-            with open(self.backup_path, "r", newline="", encoding="utf-8") as f:
+            with open(self.backup_path, newline="", encoding="utf-8") as f:
                 reader = csv.reader(f)
-                header = next(reader, None)
+                next(reader, None)  # skip the header row
                 rows = list(reader)
 
             current_session = None
@@ -1004,13 +998,13 @@ class MeterController(QWidget):
                         current_session["end_ts"] = ts_str
                         current_session["points"] += 1
                         last_ts_obj = ts_obj
-                    except:
+                    except Exception:
                         pass
 
             if current_session:
                 current_session["end_idx"] = len(rows) - 1
                 sessions.append(current_session)
-        except:
+        except Exception:
             pass
         return sessions
 
@@ -1100,9 +1094,9 @@ class MeterController(QWidget):
             if idx >= 0:
                 s = sessions[idx]
                 try:
-                    with open(self.backup_path, "r", newline="", encoding="utf-8") as f:
+                    with open(self.backup_path, newline="", encoding="utf-8") as f:
                         reader = csv.reader(f)
-                        header = next(reader, None)
+                        next(reader, None)  # skip the header row
                         rows = list(reader)
 
                     self.clear_log(init_file=False)
@@ -1114,7 +1108,7 @@ class MeterController(QWidget):
                             dur_min = "0.00"
                             try:
                                 dur_min = f"{float(row[1]) * 60:.2f}"
-                            except:
+                            except Exception:
                                 pass
                             row = [row[0], dur_min, "Cond", row[2], row[3], row[4], row[5]]
 
@@ -1139,7 +1133,7 @@ class MeterController(QWidget):
                                     self.plot_temps.append(float(row[6]))
                                 except ValueError:
                                     self.plot_temps.append(0.0)
-                            except:
+                            except Exception:
                                 pass
 
                     self.table.setSortingEnabled(True)
@@ -1156,7 +1150,7 @@ class MeterController(QWidget):
             if idx >= 0:
                 s = sessions[idx]
                 try:
-                    with open(self.backup_path, "r", newline="", encoding="utf-8") as f:
+                    with open(self.backup_path, newline="", encoding="utf-8") as f:
                         reader = csv.reader(f)
                         header = next(reader, None)
                         rows = list(reader)
@@ -1203,7 +1197,7 @@ class MeterController(QWidget):
                     time.sleep(1.0)  # Let Windows fully release the COM port handle
                     if b"<SH" in resp or b"<SL" in resp or b"#>" in resp:
                         return p
-                except:
+                except Exception:
                     pass
             return None
 
@@ -1276,9 +1270,6 @@ class MeterController(QWidget):
             self.config[f"default_com_port_{self.meter_id}"] = port
             self.save_config()
 
-            import datetime
-
-            now_str = datetime.datetime.now().strftime("%H:%M:%S")
             self.log_event(f"🔌 Connected to {port}.")
 
             self.ser.write(b"&OK#\r\n")
@@ -1301,7 +1292,7 @@ class MeterController(QWidget):
             if ser and ser.is_open:
                 try:
                     ser.close()
-                except:
+                except Exception:
                     pass
 
         threading.Thread(target=async_close, args=(self.ser,), daemon=True).start()
@@ -1315,9 +1306,6 @@ class MeterController(QWidget):
         if self.parent_app:
             self.parent_app.update_meter_status(self.meter_id, False)
 
-        import datetime
-
-        now_str = datetime.datetime.now().strftime("%H:%M:%S")
         self.log_event("❌ Disconnected.")
 
     def read_serial_loop(self):
@@ -1351,7 +1339,7 @@ class MeterController(QWidget):
                     try:
                         if self.ser and self.ser.is_open:
                             self.ser.write(b"&OK#\r\n")
-                    except:
+                    except Exception:
                         pass
             time.sleep(1.5)
 
@@ -1434,7 +1422,7 @@ class MeterController(QWidget):
                                 ] = new_ms
                             val_changed = True
                         self.last_serial_cond_ms = new_ms
-                    except:
+                    except Exception:
                         pass
                 else:
                     cond_us = str(val_float)
@@ -1445,15 +1433,15 @@ class MeterController(QWidget):
                         webhook_url = self.config.get(f"alert_webhook_{self.meter_id}", "")
                         try:
                             threshold = float(self.config.get(f"alert_threshold_{self.meter_id}", 0.5))
-                        except:
+                        except Exception:
                             threshold = 0.5
                         try:
                             cooldown_min = float(self.config.get(f"alert_cooldown_{self.meter_id}", 5.0))
-                        except:
+                        except Exception:
                             cooldown_min = 5.0
                         try:
                             delay_min = float(self.config.get(f"alert_delay_{self.meter_id}", 5.0))
-                        except:
+                        except Exception:
                             delay_min = 5.0
 
                         if self.alert_start_time is None:
@@ -1468,7 +1456,13 @@ class MeterController(QWidget):
                             if abs(curr_log - self.baseline_log_cond) >= threshold:
                                 if time.time() - self.last_alert_time > cooldown_min * 60:
                                     self.last_alert_time = time.time()
-                                    msg = f"🔔 **Meter {self.meter_id} Alert**\nConductivity changed significantly!\nPrevious baseline log: {self.baseline_log_cond:.3f}\nCurrent log: {curr_log:.3f}\nCurrent value: {cond_us_val:.1f} µS/cm"
+                                    msg = (
+                                        f"🔔 **Meter {self.meter_id} Alert**\n"
+                                        "Conductivity changed significantly!\n"
+                                        f"Previous baseline log: {self.baseline_log_cond:.3f}\n"
+                                        f"Current log: {curr_log:.3f}\n"
+                                        f"Current value: {cond_us_val:.1f} µS/cm"
+                                    )
                                     self.baseline_log_cond = curr_log
                                     self.send_discord_alert(webhook_url, msg)
 
@@ -1537,7 +1531,6 @@ class MeterController(QWidget):
                         import cv2
                         import os
                         import time
-                        from PyQt6.QtCore import QMetaObject, Qt, Q_ARG
 
                         time.sleep(h_lag / 1000.0)
 
@@ -1565,7 +1558,7 @@ class MeterController(QWidget):
                         if m_flag:
                             try:
                                 self.signals.reset_manual_snap.emit()
-                            except:
+                            except Exception:
                                 pass
 
                     import threading
@@ -1591,7 +1584,7 @@ class MeterController(QWidget):
                                 0, lambda: app.btn_calibration_burst.setText("Recording Burst...")
                             )
                             QTimer.singleShot(0, lambda: app.btn_calibration_burst.setEnabled(False))
-                        except:
+                        except Exception:
                             pass
 
             except Exception as e:
@@ -1667,7 +1660,7 @@ class MeterController(QWidget):
                 if is_new:
                     writer.writerow(self.columns)
                 writer.writerow(full_row)
-        except:
+        except Exception:
             pass
 
         self.schedule_plot()
@@ -1708,7 +1701,7 @@ class MeterController(QWidget):
         if url:
             self.send_discord_alert(
                 url,
-                f"🧪 **Test Alert from Meter {self.meter_id}**\\nThis is a test to confirm the webhook works!",
+                f"🧪 **Test Alert from Meter {self.meter_id}**\nThis is a test to confirm the webhook works!",
             )
             QMessageBox.information(self, "Test Sent", "Test alert dispatched to Discord.")
         else:
@@ -1758,8 +1751,10 @@ class MeterController(QWidget):
             import matplotlib.ticker as ticker
 
             # Sort all arrays by date to prevent zig-zag lines from async threads
-            sorted_data = sorted(zip(self.plot_dates, self.plot_conds, self.plot_temps), key=lambda x: x[0])
-            self.plot_dates, self.plot_conds, self.plot_temps = [list(x) for x in zip(*sorted_data)]
+            points = zip(self.plot_dates, self.plot_conds, self.plot_temps, strict=False)
+            sorted_data = sorted(points, key=lambda x: x[0])
+            columns = [list(x) for x in zip(*sorted_data, strict=False)]
+            self.plot_dates, self.plot_conds, self.plot_temps = columns
 
             is_duration = self.xaxis_combo.currentText() == "X-Axis: Duration (min)"
 
@@ -1771,7 +1766,7 @@ class MeterController(QWidget):
             if self.is_recording and self.combo_autosave.currentText() == "Every X Minutes":
                 try:
                     autosave_interval = float(self.ent_autosave_min.text())
-                except:
+                except Exception:
                     autosave_interval = 5.0
 
                 if len(durations) > 0:
@@ -1789,15 +1784,13 @@ class MeterController(QWidget):
                 mode = self.combo_autostop.currentText()
                 try:
                     autostop_interval = float(self.ent_autostop_min.text())
-                except:
+                except Exception:
                     autostop_interval = 60.0
 
                 if len(durations) > 0:
                     elapsed_min = durations[-1]
                     if elapsed_min >= autostop_interval:
                         import datetime
-
-                        now_str = datetime.datetime.now().strftime("%H:%M:%S")
 
                         if mode in ["Stop Meter", "Stop Both"] and getattr(self, "is_recording", False):
                             self.toggle_record()
@@ -1836,7 +1829,7 @@ class MeterController(QWidget):
                     else:
                         xmin = xmax - datetime.timedelta(minutes=win_min)
                     self.ax.set_xlim(xmin, xmax)
-                except:
+                except Exception:
                     pass
 
             if not self.auto_cond_chk.isChecked():
@@ -1844,12 +1837,12 @@ class MeterController(QWidget):
                     cmin = float(self.ent_cond_min.text())
                     cmax = float(self.ent_cond_max.text())
                     self.ax.set_ylim(cmin, cmax)
-                except:
+                except Exception:
                     pass
 
             import math
 
-            valid_x = [x for x, y in zip(x_data, self.plot_temps) if not math.isnan(y)]
+            valid_x = [x for x, y in zip(x_data, self.plot_temps, strict=False) if not math.isnan(y)]
             valid_y = [y for y in self.plot_temps if not math.isnan(y)]
             self.ax_temp.plot(valid_x, valid_y, marker="s", linestyle="-", color="#e74c3c", label="Temp")
 
@@ -1868,7 +1861,7 @@ class MeterController(QWidget):
                         import scipy.signal
 
                         deriv = scipy.signal.savgol_filter(log_y, window_length=win_len, polyorder=2, deriv=1)
-                    except:
+                    except Exception:
                         pass
                 if deriv is None:
                     deriv = np.gradient(log_y)
@@ -1879,7 +1872,7 @@ class MeterController(QWidget):
                         dmin = float(self.ent_deriv_min.text())
                         dmax = float(self.ent_deriv_max.text())
                         self.ax2.set_ylim(dmin, dmax)
-                    except:
+                    except Exception:
                         pass
 
             if not self.auto_temp_chk.isChecked():
@@ -1887,7 +1880,7 @@ class MeterController(QWidget):
                     tmin = float(self.ent_temp_min.text())
                     tmax = float(self.ent_temp_max.text())
                     self.ax_temp.set_ylim(tmin, tmax)
-                except:
+                except Exception:
                     pass
 
             if is_duration:
@@ -1924,7 +1917,7 @@ class MeterController(QWidget):
                 )
                 packet.extend(b"\r\n")
                 self.ser.write(packet)
-            except:
+            except Exception:
                 pass
 
     def download_memory(self, checked=False):
@@ -2087,7 +2080,7 @@ class MeterController(QWidget):
                     import traceback
 
                     f.write(f"{datetime.datetime.now()}: {str(e)}\n{traceback.format_exc()}\n")
-            except:
+            except Exception:
                 pass
             if not auto:
                 QMessageBox.critical(self, "Error", f"Export failed! {e}")
@@ -2199,7 +2192,7 @@ class SettingsTab(QWidget):
         # 2. Meter 1 Settings
         page_m1 = QWidget()
         l_m1 = QFormLayout(page_m1)
-        self.lbl_dir1 = QLabel(self.parent_app.meter1.config.get(f"default_save_location_1", "Not Set"))
+        self.lbl_dir1 = QLabel(self.parent_app.meter1.config.get("default_save_location_1", "Not Set"))
         btn_dir1 = QPushButton("Browse...")
         btn_dir1.clicked.connect(lambda checked=False: self.choose_meter_dir(1, self.lbl_dir1))
         d1 = QHBoxLayout()
@@ -2207,15 +2200,15 @@ class SettingsTab(QWidget):
         d1.addWidget(btn_dir1)
         l_m1.addRow("Meter 1 Save Directory:", d1)
         self.ka1_chk = QCheckBox("Enable Keep-Alive (Ping every 2s)")
-        self.ka1_chk.setChecked(self.parent_app.meter1.config.get(f"keep_alive_1", True))
+        self.ka1_chk.setChecked(self.parent_app.meter1.config.get("keep_alive_1", True))
         l_m1.addRow("", self.ka1_chk)
 
         self.al1_chk = QCheckBox("Enable Discord Alerts")
-        self.al1_chk.setChecked(self.parent_app.meter1.config.get(f"alert_enabled_1", False))
-        self.al1_web = QLineEdit(self.parent_app.meter1.config.get(f"alert_webhook_1", ""))
-        self.al1_thr = QLineEdit(str(self.parent_app.meter1.config.get(f"alert_threshold_1", "0.5")))
-        self.al1_cool = QLineEdit(str(self.parent_app.meter1.config.get(f"alert_cooldown_1", "5.0")))
-        self.al1_del = QLineEdit(str(self.parent_app.meter1.config.get(f"alert_delay_1", "5.0")))
+        self.al1_chk.setChecked(self.parent_app.meter1.config.get("alert_enabled_1", False))
+        self.al1_web = QLineEdit(self.parent_app.meter1.config.get("alert_webhook_1", ""))
+        self.al1_thr = QLineEdit(str(self.parent_app.meter1.config.get("alert_threshold_1", "0.5")))
+        self.al1_cool = QLineEdit(str(self.parent_app.meter1.config.get("alert_cooldown_1", "5.0")))
+        self.al1_del = QLineEdit(str(self.parent_app.meter1.config.get("alert_delay_1", "5.0")))
         btn_test1 = QPushButton("Test Webhook")
         btn_test1.clicked.connect(self.parent_app.meter1.test_discord_alert)
         l_m1.addRow("", self.al1_chk)
@@ -2231,7 +2224,7 @@ class SettingsTab(QWidget):
         # 3. Meter 2 Settings
         page_m2 = QWidget()
         l_m2 = QFormLayout(page_m2)
-        self.lbl_dir2 = QLabel(self.parent_app.meter2.config.get(f"default_save_location_2", "Not Set"))
+        self.lbl_dir2 = QLabel(self.parent_app.meter2.config.get("default_save_location_2", "Not Set"))
         btn_dir2 = QPushButton("Browse...")
         btn_dir2.clicked.connect(lambda checked=False: self.choose_meter_dir(2, self.lbl_dir2))
         d2 = QHBoxLayout()
@@ -2239,15 +2232,15 @@ class SettingsTab(QWidget):
         d2.addWidget(btn_dir2)
         l_m2.addRow("Meter 2 Save Directory:", d2)
         self.ka2_chk = QCheckBox("Enable Keep-Alive (Ping every 2s)")
-        self.ka2_chk.setChecked(self.parent_app.meter2.config.get(f"keep_alive_2", True))
+        self.ka2_chk.setChecked(self.parent_app.meter2.config.get("keep_alive_2", True))
         l_m2.addRow("", self.ka2_chk)
 
         self.al2_chk = QCheckBox("Enable Discord Alerts")
-        self.al2_chk.setChecked(self.parent_app.meter2.config.get(f"alert_enabled_2", False))
-        self.al2_web = QLineEdit(self.parent_app.meter2.config.get(f"alert_webhook_2", ""))
-        self.al2_thr = QLineEdit(str(self.parent_app.meter2.config.get(f"alert_threshold_2", "0.5")))
-        self.al2_cool = QLineEdit(str(self.parent_app.meter2.config.get(f"alert_cooldown_2", "5.0")))
-        self.al2_del = QLineEdit(str(self.parent_app.meter2.config.get(f"alert_delay_2", "5.0")))
+        self.al2_chk.setChecked(self.parent_app.meter2.config.get("alert_enabled_2", False))
+        self.al2_web = QLineEdit(self.parent_app.meter2.config.get("alert_webhook_2", ""))
+        self.al2_thr = QLineEdit(str(self.parent_app.meter2.config.get("alert_threshold_2", "0.5")))
+        self.al2_cool = QLineEdit(str(self.parent_app.meter2.config.get("alert_cooldown_2", "5.0")))
+        self.al2_del = QLineEdit(str(self.parent_app.meter2.config.get("alert_delay_2", "5.0")))
         btn_test2 = QPushButton("Test Webhook")
         btn_test2.clicked.connect(self.parent_app.meter2.test_discord_alert)
         l_m2.addRow("", self.al2_chk)
@@ -2331,10 +2324,8 @@ from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 import cv2
 
-from PyQt6.QtWidgets import QRubberBand, QSlider, QPushButton, QHBoxLayout, QDoubleSpinBox
-from PyQt6.QtCore import QPoint, QRect, Qt, pyqtSignal
-from PyQt6.QtGui import QImage, QPixmap
-import cv2
+from PyQt6.QtWidgets import QRubberBand, QSlider
+from PyQt6.QtCore import QPoint, QRect, pyqtSignal
 
 
 class InteractiveImageLabel(QLabel):
@@ -2401,8 +2392,8 @@ class OCRFeedTab(QWidget):
                 "text-align: left; font-weight: bold; padding: 5px; background-color: #34495e; color: white;"
             )
             content_widget = QWidget()
-            l = QVBoxLayout(content_widget)
-            l.setContentsMargins(0, 0, 0, 0)
+            lay = QVBoxLayout(content_widget)
+            lay.setContentsMargins(0, 0, 0, 0)
             parent_layout.addWidget(btn_toggle)
             parent_layout.addWidget(content_widget)
             btn_toggle.toggled.connect(
@@ -2415,7 +2406,7 @@ class OCRFeedTab(QWidget):
             if not default_collapsed:
                 content_widget.setVisible(True)
                 btn_toggle.setText(f"▼ {title}")
-            return l
+            return lay
 
         # 1. Camera Settings
         l_camera = make_collapsible("Camera Settings", left_layout)
@@ -2526,12 +2517,12 @@ class OCRFeedTab(QWidget):
             )
 
             content_widget = QWidget()
-            l = QVBoxLayout(content_widget)
-            l.setContentsMargins(0, 0, 0, 0)
+            lay = QVBoxLayout(content_widget)
+            lay.setContentsMargins(0, 0, 0, 0)
 
             btn_set = QPushButton(f"✅ Assign {title} to Drawn Box")
             btn_set.clicked.connect(lambda checked, n=name: self.set_specific_roi(n))
-            l.addWidget(btn_set)
+            lay.addWidget(btn_set)
 
             grid = QGridLayout()
             spins = {}
@@ -2549,11 +2540,11 @@ class OCRFeedTab(QWidget):
                 spins[prop] = spin
 
             self.roi_spinboxes[name] = spins
-            l.addLayout(grid)
+            lay.addLayout(grid)
 
             btn_clear_single = QPushButton("🗑️ Clear Single")
             btn_clear_single.clicked.connect(lambda checked, n=name: self.clear_single_roi(n))
-            l.addWidget(btn_clear_single)
+            lay.addWidget(btn_clear_single)
 
             left_layout.addWidget(btn_toggle)
             left_layout.addWidget(content_widget)
@@ -2774,7 +2765,7 @@ class OCRFeedTab(QWidget):
                         0, lambda: self.app.btn_calibration_burst.setText("🎯 Capture Calibration Burst")
                     )
                     QTimer.singleShot(0, lambda: self.app.btn_calibration_burst.setEnabled(True))
-                except:
+                except Exception:
                     pass
 
                 self.app.calibration_session_dir = None
@@ -2792,7 +2783,7 @@ class OCRFeedTab(QWidget):
                             ),
                         )
                         QTimer.singleShot(0, lambda: self.app.btn_calibration_burst.setEnabled(False))
-                    except:
+                    except Exception:
                         pass
         try:
             h, w = frame.shape[:2]
@@ -2825,7 +2816,8 @@ class MeterApp(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        import os, json
+        import os
+        import json
 
         self.setWindowTitle("Apera Dual-Meter Control Center (PyQt6)")
         self.resize(1400, 800)
@@ -2835,9 +2827,9 @@ class MeterApp(QMainWindow):
         self.shared_config = {}
         if os.path.exists(self.config_path):
             try:
-                with open(self.config_path, "r") as f:
+                with open(self.config_path) as f:
                     self.shared_config = json.load(f)
-            except:
+            except Exception:
                 pass
 
         # Instantiate buttons without placing them in the global toolbar
@@ -3000,10 +2992,12 @@ class MeterApp(QMainWindow):
 
         # Style status labels
         self.status_m1.setStyleSheet(
-            "color: #e74c3c; font-weight: bold; margin-right: 5px; border: 1px solid #e74c3c; border-radius: 3px; padding: 2px;"
+            "color: #e74c3c; font-weight: bold; margin-right: 5px; "
+            "border: 1px solid #e74c3c; border-radius: 3px; padding: 2px;"
         )
         self.status_m2.setStyleSheet(
-            "color: #e74c3c; font-weight: bold; margin-right: 20px; border: 1px solid #e74c3c; border-radius: 3px; padding: 2px;"
+            "color: #e74c3c; font-weight: bold; margin-right: 20px; "
+            "border: 1px solid #e74c3c; border-radius: 3px; padding: 2px;"
         )
         self.status_cam.setStyleSheet("color: gray; font-weight: bold; margin-right: 20px; padding: 3px;")
 
@@ -3136,7 +3130,6 @@ class MeterApp(QMainWindow):
     def restart_app(self, checked=False):
         import sys
         import subprocess
-        import os
 
         # If self.close() returns False, the user canceled the closing (e.g. unsaved data)
         if not self.close():
@@ -3147,7 +3140,7 @@ class MeterApp(QMainWindow):
         else:
             args = [sys.executable] + sys.argv
 
-        subprocess.Popen(args)
+        subprocess.Popen(args)  # noqa: S603 - relaunches this same program
         QApplication.quit()
 
     def _poll_camera_frame(self):
@@ -3182,7 +3175,7 @@ class MeterApp(QMainWindow):
         try:
             with open(self.config_path, "w") as f:
                 json.dump(self.shared_config, f, indent=4)
-        except:
+        except Exception:
             pass
 
     def _on_record_toggled(self):
@@ -3235,9 +3228,11 @@ class MeterApp(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Missing Data Streams Warning",
-                "You have started recording a run, but the following streams are offline or not recording:\n\n"
+                "You have started recording a run, but the following streams are offline "
+                "or not recording:\n\n"
                 + "\n".join([f"- {m}" for m in missing])
-                + "\n\nIf you intended to record all of them, please enable them now to prevent unit logic lock-outs.",
+                + "\n\nIf you intended to record all of them, please enable them now "
+                "to prevent unit logic lock-outs.",
             )
 
     def set_ocr_status(self, text, color):
@@ -3260,7 +3255,8 @@ class MeterApp(QMainWindow):
         else:
             status_label.setText(f"⚠️ M{meter_id}: NO SERIAL (DISCONNECTED)")
             status_label.setStyleSheet(
-                "color: #e74c3c; font-weight: bold; margin-right: 20px; border: 1px solid #e74c3c; border-radius: 3px; padding: 2px;"
+                "color: #e74c3c; font-weight: bold; margin-right: 20px; "
+                "border: 1px solid #e74c3c; border-radius: 3px; padding: 2px;"
             )
 
     def toggle_ocr_mode(self, state):
@@ -3354,7 +3350,7 @@ class MeterApp(QMainWindow):
             raw_str = ocr_str.replace(".", "")
             try:
                 raw_int = int(raw_str)
-            except:
+            except Exception:
                 return 0.0
             if raw_int == 0:
                 return 0.0
@@ -3365,7 +3361,8 @@ class MeterApp(QMainWindow):
                 if raw_int > limit_val:
                     return 0.0
 
-            # Since the CNN perfectly predicts the decimal point, we no longer need to generate all decimal permutations.
+            # Since the CNN perfectly predicts the decimal point, we no longer need to
+            # generate all decimal permutations.
             # The only ambiguity is the UNIT on the LCD screen (mS vs uS).
             # The true conductivity in mS is either the literal value (if LCD is showing mS)
             # or value / 1000 (if LCD is showing uS).

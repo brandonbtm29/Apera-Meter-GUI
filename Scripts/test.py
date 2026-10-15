@@ -13,7 +13,8 @@ import threading
 
 
 def watchdog():
-    import time, traceback
+    import time
+    import traceback
 
     time.sleep(2)
     print("Watchdog triggered, printing stack trace:")
