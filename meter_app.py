@@ -2639,7 +2639,9 @@ class OCRFeedTab(QWidget):
                 import time
 
                 time.sleep(0.5)
-                self.app.ocr_pipeline.start()
+                if not self.app.ocr_pipeline.start():
+                    self.app.ocr_checkbox.setChecked(False)
+                    self.app.set_ocr_status("🎥 Camera: Not found", "#e67e22")
 
     def on_ocr_interval_changed(self, val):
         if self.app and hasattr(self.app, "ocr_pipeline"):
@@ -3429,11 +3431,18 @@ class MeterApp(QMainWindow):
         import time
 
         if state:
+            if not self.ocr_pipeline.start():
+                # No camera at this index: say so instead of claiming the feed is active.
+                self.ocr_checkbox.blockSignals(True)
+                self.ocr_checkbox.setChecked(False)
+                self.ocr_checkbox.blockSignals(False)
+                self.ocr_checkbox.setText("🎥 Turn Camera On")
+                self.set_ocr_status("🎥 Camera: Not found", "#e67e22")
+                return
             self.ocr_checkbox.setText("🎥 Turn Camera Off")
             self.set_ocr_status("🎥 Camera: Feed Active", "#27ae60")
             self.meter1.ocr_active = True
             self.meter2.ocr_active = True
-            self.ocr_pipeline.start()
             self.ocr_start_time = time.time()
         else:
             self.ocr_checkbox.setText("🎥 Turn Camera On")

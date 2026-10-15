@@ -115,8 +115,9 @@ class MeterOCR:
                 self.cap.set(cv2.CAP_PROP_FOCUS, val)
 
     def start(self):
+        """Open the camera and start reading frames. Returns False if no camera could be opened."""
         if self.is_running:
-            return
+            return True
         import os
 
         if os.name == "nt":
@@ -131,8 +132,12 @@ class MeterOCR:
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 3840)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)
 
+        if not self.cap.isOpened():
+            self.cap.release()
+            return False
         self.is_running = True
         threading.Thread(target=self._loop, daemon=True).start()
+        return True
 
     def stop(self):
         self.is_running = False

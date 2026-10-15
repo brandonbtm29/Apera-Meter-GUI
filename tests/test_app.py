@@ -61,3 +61,23 @@ def test_self_test_flag_reports_and_exits(tmp_path):
     assert {"Settings", "Meter 1", "Meter 2"} <= set(data["tabs"])
     # 0 = OCR model loaded; 2 = no model (e.g. CI without Git LFS or without PyTorch)
     assert result.returncode == data["exit_code"] == (0 if data["ocr_model_loaded"] else 2)
+
+
+def test_missing_camera_is_reported(monkeypatch):
+    """Turning the camera on without a camera says 'Not found' instead of 'Feed Active'."""
+    from PyQt6.QtWidgets import QApplication, QMessageBox
+
+    import meter_app
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    app = QApplication.instance() or QApplication([])
+    window = meter_app.MeterApp()
+    try:
+        monkeypatch.setattr(window.ocr_pipeline, "start", lambda: False)
+        window.ocr_checkbox.setChecked(True)
+        app.processEvents()
+        assert "Not found" in window.status_cam.text()
+        assert not window.ocr_checkbox.isChecked()
+    finally:
+        window.close()
+        app.processEvents()

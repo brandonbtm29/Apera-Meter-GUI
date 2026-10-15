@@ -62,6 +62,7 @@ def main():
         )
         meter.log_point_ui(t, row)
 
+    window.ocr_autostart_chk.setChecked(False)  # no camera in a headless run
     meter.plot_data()
     for _ in range(20):
         app.processEvents()
