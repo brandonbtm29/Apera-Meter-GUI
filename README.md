@@ -37,8 +37,21 @@ are needed every few seconds for hours and nobody should have to copy numbers of
   display, and the app reads the digits with a trained model. A curation tab helps collect and
   label images for retraining.
 - **Shared settings**: keep settings in a synced folder so several computers behave the same.
+- **One-click updates**: **Check for Updates** on the Settings tab installs the newest release.
 
 ## Quick start
+
+### Option A: standalone Windows app (no Python needed)
+
+1. Download `Apera-Meter-GUI-<version>-windows.zip` from the
+   [latest release](https://github.com/brandonbtm29/Apera-Meter-GUI/releases/latest).
+2. Unzip it somewhere you can write to (e.g. `Documents`), not `Program Files`.
+3. Open the `Apera Meter GUI` folder and double-click `Apera Meter GUI.exe`. Windows SmartScreen
+   may warn that the app is unrecognised (it isn't code-signed); choose **More info → Run anyway**.
+
+The OCR model is included. Settings are kept in the same folder as the `.exe`.
+
+### Option B: run from source (Windows or macOS)
 
 You need **Python 3.11 or newer**, **Git**, and **[Git LFS](https://git-lfs.com)** (for the
 135 MB OCR model; skip it if you won't use the camera).
@@ -73,7 +86,7 @@ The app opens without a meter attached, so you can look around first. Plug a met
 | **Meter 1 / Meter 2** tabs | **Connect**, **Start Recording**, **Save Log to Excel**, **Quick Save** (overwrite the auto-save file), **Download Raw Memory**, **Sync Meter Time**, **Recover Session**, **Clear Data** |
 | Right panel | Connection, metadata tokens for file names, save/auto-save/auto-stop, experiment notes |
 | Left panel | Axis limits, graph units, time vs. duration axis, event log |
-| **Settings** tab | Save folder and file-name template for both meters, Discord alerts, settings folder, restart |
+| **Settings** tab | Save folder and file-name template for both meters, Discord alerts, settings folder, version and **Check for Updates** |
 | **Live OCR Feed** tab | Camera on/off, draw the reading area, OCR filters and logging |
 | **Dataset Curation** tab | Review and label camera crops for retraining the OCR model |
 
@@ -81,17 +94,20 @@ The app opens without a meter attached, so you can look around first. Plug a met
 
 The app keeps **data** and **settings** in separate places.
 
-**Data** (Excel exports, backups, logs, OCR sessions) goes in a data folder, by default:
+**Data** (Excel exports, backups, logs, OCR sessions) goes in a data folder:
+
+- `~/SyncThing/UAkron Playground/Electrical Conductivity Meter/` if that SyncThing folder exists
+  (the lab's computers), otherwise
+- `~/Documents/Apera Meter Data/`.
 
 ```
-~/SyncThing/UAkron Playground/Electrical Conductivity Meter/
+<data folder>/
 ├── Data/            Excel exports (the default save folder)
 ├── Data Backups/    crash-recovery CSVs, one per meter
 └── Sessions/        OCR captures and the training dataset
 ```
 
-That default suits the lab's SyncThing setup. To use another folder, set an environment
-variable before starting the app:
+To use another folder, set an environment variable before starting the app:
 
 | Variable | Meaning |
 |---|---|
@@ -100,13 +116,24 @@ variable before starting the app:
 | `UAKRON_SETTINGS_DIR` | Read and write settings in this folder |
 
 **Settings** (`config.json` for meter and app settings, `global_rois.json` for the camera reading
-areas) live next to the code by default and are never committed. On the **Settings** tab,
+areas) live next to the code (or next to the `.exe`) by default and are never committed. On the **Settings** tab,
 **Settings Folder** can move them to a synced folder; relative paths are inside the data folder,
 so `Settings` keeps them identical across computers.
 
 All settings are edited in the app, which writes `config.json` itself; there's no need to edit
 it by hand. Treat it as private: it holds your **Discord webhook URLs**, and anyone with a
 webhook URL can post to that channel.
+
+## Updating
+
+**Settings → Check for Updates** asks GitHub for the newest release and shows what changed.
+
+- **Running from source (a git clone):** **Update and Restart** moves the clone to the new release,
+  reinstalls its Python packages and restarts the app. If you've edited the app's files or made
+  your own commits, it stops and explains instead of overwriting them. Your data and settings are
+  never touched.
+- **Standalone app:** it opens the release page; download the new zip and replace the old folder
+  (copy your `config.json` across if you keep settings next to the `.exe`).
 
 ## How it works
 
@@ -125,6 +152,7 @@ webhook URL can post to that channel.
 | `ocr_pipeline.py`, `ocr_model.py` | Camera capture, preprocessing and the OCR network |
 | `dataset_curation_tab.py` | The labelling tab |
 | `settings_location.py` | Where settings are stored (shared with the lab's other apps) |
+| `updater.py` | Checks GitHub for a newer release and updates a git clone |
 | `Scripts/` | Build script, log repair (`cleanup_1000x_gaps.py`), screenshot generator |
 
 ## Good to know
@@ -137,10 +165,10 @@ webhook URL can post to that channel.
   different setup, expect to collect and label new images with the curation tab and retrain.
 - If you cloned without Git LFS, `meter_ocr_model.pt` is a small text pointer and OCR won't
   load. Run `git lfs install` and then `git lfs pull` to fetch it.
-- `pyqtdarktheme`, used for the dark theme, is no longer maintained. pip installs version 2.1.0
-  on Python 3.11 and 0.1.7 on 3.12 and newer; the app works with both.
-- `Scripts/build_app.py` builds a single-file executable with PyInstaller. It hasn't been tested
-  recently and doesn't bundle the OCR model or icon yet.
+- The dark theme comes from `pyqtdarktheme-fork`. If an older environment still has
+  `pyqtdarktheme` installed, run `pip uninstall pyqtdarktheme` and then reinstall the app
+  (**Check for Updates** does this for you).
+- There's no standalone macOS build yet; on a Mac, run from source (Option B).
 
 ## Development
 
@@ -149,9 +177,13 @@ python -m pip install -e ".[dev]"     # add ,ocr to also run the OCR model test
 pytest                                # headless smoke tests; never touch real data
 ruff check . && ruff format --check .
 python Scripts/make_screenshot.py     # refresh docs/screenshot.png
+
+python -m pip install -e ".[ocr,dev]" # needed for a standalone build
+python Scripts/build_app.py           # dist/Apera Meter GUI/ + a zip
+"dist/Apera Meter GUI/Apera Meter GUI.exe" --self-test   # starts, checks tabs + OCR model, exits
 ```
 
-CI runs the same checks on Windows and Linux with Python 3.11–3.13, and scans the full history
+CI runs the same checks on Windows and Linux with Python 3.11–3.14, and scans the full history
 for secrets. The version lives in one place, `__version__` in `meter_app.py`; changes are listed
 in [CHANGELOG.md](CHANGELOG.md). Security reports: see [SECURITY.md](SECURITY.md).
 
@@ -163,6 +195,9 @@ git tag -a vX.Y.Z -m "Apera Meter GUI X.Y.Z"
 git push origin main && git push origin vX.Y.Z
 gh release create vX.Y.Z --title "Apera Meter GUI X.Y.Z" --notes-file notes.md --latest --verify-tag
 ```
+
+Publishing the release starts the **Release build** workflow, which builds the Windows app, runs
+its self-test and attaches the zip to the release (about 15 minutes).
 
 ## How this was built
 

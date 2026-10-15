@@ -8,16 +8,17 @@ Dual-meter PyQt6 app for Apera EC400S / EC8500 conductivity meters (serial auto-
 - Test: `pytest` (headless; `tests/conftest.py` points the data and settings folders at a temp dir before `meter_app` is imported, because importing it `chdir`s into the data folder).
 - Lint/format: `ruff check . && ruff format --check .`. `settings_location.py` is excluded from ruff so it stays byte-identical to the other UAkron repos. Don't enable import sorting (torch must load before PyQt6 on Windows).
 - Version: `__version__` in `meter_app.py` is the only place; update `CHANGELOG.md` with every user-facing change. Release steps are in the README.
-- Build: `python Scripts/build_app.py` → `dist/Apera_Meter_GUI` (untested; doesn't bundle the model or icon).
+- Build: `python Scripts/build_app.py` → `dist/Apera Meter GUI/` (PyInstaller folder app with the model and icon) + zip. `--self-test` on the built exe checks it starts and loads the model. Publishing a GitHub release runs `.github/workflows/release.yml`, which builds on Windows and attaches the zip.
 - Use a per-machine virtualenv: `python -m venv .venv` in this folder (gitignored). Never sync or commit it.
 - `meter_ocr_model.pt` is stored with **Git LFS** (`.gitattributes`). Run `git lfs install` on each machine before cloning. CI deliberately doesn't fetch it.
 - Commits: author email `208085582+brandonbtm29@users.noreply.github.com`; end AI-assisted commits with a `Co-Authored-By:` trailer. CI (`.github/workflows/ci.yml`) must stay green.
 
 ## Code map
-- `meter_app.py` (~3,200 lines): `MeterController` (per-meter tab and serial), `SettingsTab`, `OCRFeedTab` (camera + ROI via `InteractiveImageLabel`, ROIs saved in `global_rois.json` in the data folder), `MeterApp` (main window).
+- `meter_app.py` (~3,700 lines; `main()`/`create_app()` at the bottom): `MeterController` (per-meter tab and serial), `SettingsTab`, `OCRFeedTab` (camera + ROI via `InteractiveImageLabel`, ROIs saved in `global_rois.json` in the data folder), `MeterApp` (main window).
 - `ocr_model.py`: `MeterCRNN`, the deployed model definition. A copy lives in `LCD-Digit-CRNN`; keep the two in sync if the architecture changes.
 - `ocr_pipeline.py`: preprocessing and inference; loads `meter_ocr_model.pt` from this folder via `__file__`.
 - `dataset_curation_tab.py`: labelling UI; writes crops to `Sessions/Master_Dataset/` in the data folder (the training set for LCD-Digit-CRNN).
+- `updater.py`: GitHub release check and git-clone update behind Settings → Check for Updates (no Qt; tested in `tests/test_updater.py`).
 - `Scripts/`: `build_app.py`, `cleanup_1000x_gaps.py`, `make_screenshot.py` (renders `docs/screenshot.png` with fake data), `preview.py`, `test.py` (app helpers only).
 - `tests/`: headless pytest smoke tests.
 
@@ -30,7 +31,7 @@ Training, the DoE sweeps, the adversarial benchmark and error profiling moved to
 
 ## Where code and data live
 - **Code** (this repo) is cloned outside SyncThing, e.g. `~/GitHub Projects/UAkron/Apera-Meter-GUI`. It syncs through GitHub only.
-- **Instrument data** stays in SyncThing, by default `~/SyncThing/UAkron Playground/Electrical Conductivity Meter/`. Never copy data into the repo, and never commit the settings files listed below.
+- **Instrument data** stays in SyncThing, by default `~/SyncThing/UAkron Playground/Electrical Conductivity Meter/` (when `~/SyncThing/UAkron Playground` doesn't exist, `~/Documents/Apera Meter Data`). Never copy data into the repo, and never commit the settings files listed below.
 - **How it works:** at startup the app `chdir`s into its SyncThing data folder (`DATA_DIR`, override with `UAKRON_APP_DATA_DIR` or `UAKRON_DATA_DIR`). Every relative data path (`Data/`, `Data Backups/`, `Sessions/`, run logs) therefore resolves inside SyncThing, and the default save folder is `Data` there. Files that ship with the code (icons, the OCR model) must be loaded via `script_dir` / `__file__`, never by bare relative name. Run the app from this clone.
 - **Settings folder (since 10 Oct 2026):** the settings files (`config.json`, `global_rois.json`) are read from `CONFIG_DIR`, resolved by `settings_location.py` (identical copy in every UAkron repo). Default: this repo folder (gitignored), so a fresh clone starts from the app's defaults. The per-machine pointer `settings_location.json` (gitignored), set from the app's "Settings Folder" box, can move them; a relative path is relative to the data folder. Brandon's machines point at `Settings`, i.e. `UAkron Playground/<App>/Settings/` in SyncThing, so settings stay identical across computers (including `secrets.json`; never print it). `UAKRON_SETTINGS_DIR` overrides the pointer. Store save folders relative to the data folder (e.g. `Data`), not as absolute paths.
 

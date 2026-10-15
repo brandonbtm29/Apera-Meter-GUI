@@ -1,10 +1,40 @@
 # Changelog
 
 All notable changes to Apera Meter GUI. Versions follow [Semantic Versioning](https://semver.org/):
-while the app is below 1.0, new features bump the middle number and fixes bump the last.
-The format is based on [Keep a Changelog](https://keepachangelog.com/).
+new features bump the middle number, fixes bump the last, and changes that break existing setups
+bump the first. The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
+
+## [1.1.0] - 2026-10-14
+
+The app is now available as a standalone Windows download and can update itself. (Version
+numbers jump from 0.1.0 to 1.1.0 to reflect that the app is a finished, everyday tool.)
+
+### Added
+- **Standalone Windows app**: each release has a zip with the app, Python and the OCR model
+  included. No Python install needed.
+- **Check for Updates** on the Settings tab (replaces **Restart Application**): shows the new
+  release's notes and, for a git clone, updates and restarts in one click. Local edits are never
+  overwritten.
+- The version number is shown on the Settings tab and in the window title.
+- Python 3.14 support.
+
+### Changed
+- On computers without the lab's SyncThing folder, data now goes to `~/Documents/Apera Meter Data`
+  instead of creating `~/SyncThing/UAkron Playground/...`. Lab computers are unaffected.
+- The dark theme now uses the maintained `pyqtdarktheme-fork` (same look).
+- Interface polish: section titles show "&" instead of "_", the X-axis and unit menus are no
+  longer clipped, the DateTime column fits a full timestamp, the d(log C)/dt label no longer
+  overlaps the conductivity axis, roomier tabs, and "General" instead of "Global & Application
+  Settings".
+
+### Fixed
+- Turning the camera on with no camera attached showed "Camera: Feed Active"; it now says
+  "Camera: Not found".
+- The Discord test alert showed a literal `\n` instead of a line break.
+- Closing the app with Ctrl+C or during shutdown is no longer swallowed by catch-all error
+  handlers.
 
 ## [0.1.0] - 2026-10-14
 
@@ -49,5 +79,6 @@ with Claude (Anthropic).
 - Personal email addresses, home-folder paths and machine names were removed from the files and
   the git history. Commit IDs before this release changed as a result.
 
-[Unreleased]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v0.1.0...v1.1.0
 [0.1.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/releases/tag/v0.1.0
