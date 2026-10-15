@@ -3565,10 +3565,10 @@ class MeterApp(QMainWindow):
         event.accept()
 
 
-if __name__ == "__main__":
+def create_app(argv=None):
+    """Create the QApplication with the app icon and dark theme (shared by main() and scripts)."""
     import ctypes
-    import sys
-    import os
+
     from PyQt6.QtGui import QIcon
 
     try:
@@ -3577,14 +3577,22 @@ if __name__ == "__main__":
     except Exception:
         pass
 
-    app = QApplication(sys.argv)
+    app = QApplication.instance() or QApplication(sys.argv if argv is None else argv)
 
-    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Conductivity meter.ico")
+    icon_path = os.path.join(script_dir, "Conductivity meter.ico")
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
 
     app.setStyleSheet(qdarktheme.load_stylesheet("dark"))
+    return app
 
+
+def main():
+    app = create_app()
     window = MeterApp()
     window.show()
     sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

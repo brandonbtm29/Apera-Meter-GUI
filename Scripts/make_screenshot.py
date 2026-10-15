@@ -3,9 +3,11 @@
 Runs headless and points the app at a temporary data/settings folder, so it never touches real
 data or settings. Run from the repository folder:
 
-    python Scripts/make_screenshot.py
+    python Scripts/make_screenshot.py                     # docs/screenshot.png
+    python Scripts/make_screenshot.py --tab Settings --out settings.png
 """
 
+import argparse
 import datetime
 import math
 import os
@@ -23,21 +25,25 @@ os.environ["UAKRON_SETTINGS_DIR"] = os.path.join(_tmp, "settings")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(REPO))
 
-import qdarktheme  # noqa: E402
-from PyQt6.QtWidgets import QApplication  # noqa: E402
-
 import meter_app  # noqa: E402
 
 
 def main():
-    app = QApplication([])
-    app.setStyleSheet(qdarktheme.load_stylesheet("dark"))
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--tab", default="Meter 1", help="tab to show (default: Meter 1)")
+    parser.add_argument("--out", default=str(OUT), help="output PNG (default: docs/screenshot.png)")
+    parser.add_argument("--size", default="1600x950", help="window size, WIDTHxHEIGHT")
+    args = parser.parse_args()
+
+    app = meter_app.create_app([])
     window = meter_app.MeterApp()
-    window.resize(1600, 950)
+    width, height = (int(v) for v in args.size.split("x"))
+    window.resize(width, height)
     window.show()
 
     meter = window.meter1
-    window.tabs.setCurrentWidget(meter)
+    tabs = [window.tabs.tabText(i) for i in range(window.tabs.count())]
+    window.tabs.setCurrentIndex(tabs.index(args.tab))
     meter.set_device_info("Model", "EC400S")
     meter.set_device_info("SN", "DEMO-0001")
 
@@ -59,9 +65,10 @@ def main():
     meter.plot_data()
     for _ in range(20):
         app.processEvents()
-    OUT.parent.mkdir(exist_ok=True)
-    window.grab().save(str(OUT))
-    print(f"Saved {OUT}")
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    window.grab().save(str(out))
+    print(f"Saved {out}")
     os._exit(0)  # skip the "unsaved data" prompt and background threads
 
 
