@@ -57,6 +57,8 @@ icon, open **Settings → Create Desktop Shortcut**.
 
 ### Option B: run from source (Windows or macOS)
 
+**Easiest:** double-click `Setup_Windows.bat` (Windows) or `Setup_Mac.command` (macOS) once. It creates the `.venv` folder and installs everything the app needs (it asks whether to add the camera OCR); run it again any time to repair or update the packages. The manual steps follow.
+
 You need **Python 3.11 or newer**, **Git**, and **[Git LFS](https://git-lfs.com)** (for the
 135 MB OCR model; skip it if you won't use the camera).
 
@@ -166,6 +168,7 @@ webhook URL can post to that channel.
 
 ## Good to know
 
+- **Error log**: errors, with tracebacks (also from background threads), go to `logs/apera_meter.log` in the data folder. An unexpected error is shown in a dialog and the app keeps running instead of closing. A hard crash (e.g. in a driver) leaves a `.fatal.log` next to it.
 - Only the **conductivity** and **temperature** readings are logged; other meter modes (pH,
   TDS, salinity…) aren't handled.
 - If a log shows sudden 1000× jumps (readings mixing µS/cm and mS/cm),

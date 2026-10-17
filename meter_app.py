@@ -40,6 +40,7 @@ os.chdir(DATA_DIR)
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 import settings_location
+import crash_log
 
 APP_DIR = settings_location.app_folder(script_dir)
 CONFIG_DIR = settings_location.resolve(APP_DIR, DATA_DIR)
@@ -3926,6 +3927,8 @@ def _log_to_file_if_needed():
 def main(argv=None):
     argv = list(sys.argv if argv is None else argv)
     self_test = "--self-test" in argv
+    # Errors go to logs/apera_meter.log in the data folder (before stdout is redirected to app.log).
+    crash_log.setup("apera_meter", os.path.join(DATA_DIR, "logs"), __version__)
     _log_to_file_if_needed()
     app = create_app([a for a in argv if a != "--self-test"])
     window = MeterApp()

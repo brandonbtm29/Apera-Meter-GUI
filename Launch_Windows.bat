@@ -16,6 +16,6 @@ exit /b 0
 :failed
 echo.
 echo The app could not start. Copy the messages above when asking for help.
-echo To install what it needs, run: "%PY%" -m pip install -e ".[ocr]"
+echo To install what it needs, double-click Setup_Windows.bat.
 pause
 exit /b 1

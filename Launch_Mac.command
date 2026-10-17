@@ -9,7 +9,7 @@ if [ -x ".venv/bin/python" ]; then PY=".venv/bin/python"; else PY="python3"; fi
 if ! "$PY" -c "import PyQt6.QtWidgets, serial, matplotlib, qdarktheme"; then
   echo
   echo "The app could not start. Copy the messages above when asking for help."
-  echo "To install what it needs, run: $PY -m pip install -e \".[ocr]\""
+  echo "To install what it needs, double-click Setup_Mac.command."
   read -r -p "Press Enter to close"
   exit 1
 fi
