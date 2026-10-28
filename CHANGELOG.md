@@ -10,7 +10,21 @@ bump the first. The format is based on [Keep a Changelog](https://keepachangelog
 - **Error log**: errors, with tracebacks (also from background threads), go to `logs/apera_meter.log` in
   the data folder. An unexpected error is shown in a dialog and the app keeps running instead of closing.
 - `Setup_Windows.bat` / `Setup_Mac.command`: one double-click creates the `.venv` and installs everything
-  (asks whether to add the camera OCR).
+  (asks whether to add the camera OCR). Use them to repair or reinstall; a first install no longer needs
+  them (see the next point).
+- `Launch_Windows.bat` and `Launch_Mac.command` set the app up by themselves the first time: they create
+  the `.venv`, install what the app needs (asking whether to add the camera OCR), then start the app. It
+  takes a minute or two; after that they start the app straight away. If setup fails, the window stays
+  open and shows why.
+- Only one copy of the app runs at a time, so two copies can't fight over a meter's COM port. Opening it
+  again brings the open window to the front. Restarting after an update or a settings-folder change
+  still works.
+- **Open Log Folder** and **Copy Diagnostics** buttons in **Settings → Application Preferences**. Copy
+  Diagnostics copies the app version, its folders, the meter connections and the end of the error log,
+  ready to paste into a GitHub issue or an email. Home-folder names and anything that looks like a
+  password or token are left out.
+- A **Check for updates when the app starts** checkbox in the same box (on by default). Turning it off
+  also stops the daily check; **Check for Updates** still works by hand.
 
 ## [1.3.0] - 2026-10-15
 
