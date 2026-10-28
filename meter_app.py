@@ -41,7 +41,10 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 import settings_location
 import crash_log
+import diagnostics
+import single_instance
 
+APP_NAME = "Apera Meter GUI"
 APP_DIR = settings_location.app_folder(script_dir)
 CONFIG_DIR = settings_location.resolve(APP_DIR, DATA_DIR)
 SETTINGS_FILES = ["config.json", "global_rois.json"]
@@ -2179,6 +2182,35 @@ class SettingsTab(QWidget):
         update_row.addWidget(self.btn_shortcut)
         update_row.addWidget(self.btn_update)
         l_app_inner.addLayout(update_row)
+
+        self.chk_update_on_start = QCheckBox("Check for updates when the app starts")
+        self.chk_update_on_start.setToolTip(
+            "Asks GitHub for the latest release a few seconds after start and once a day while the app "
+            "runs. If there is one, the version number turns amber. Nothing about you is sent."
+        )
+        self.chk_update_on_start.setChecked(self.parent_app.update_check_on_start())
+        self.chk_update_on_start.toggled.connect(self.parent_app.set_update_check_on_start)
+        l_app_inner.addWidget(self.chk_update_on_start)
+
+        help_row = QHBoxLayout()
+        self.btn_open_logs = QPushButton("📂 Open Log Folder")
+        self.btn_open_logs.setToolTip("Show the folder with the app's error log")
+        self.btn_open_logs.setStyleSheet("padding: 8px 16px; font-weight: bold;")
+        self.btn_open_logs.clicked.connect(self.parent_app.open_log_folder)
+        self.btn_copy_diagnostics = QPushButton("📋 Copy Diagnostics")
+        self.btn_copy_diagnostics.setToolTip(
+            "Copy the app version, folders, meter connections and the end of the error log, "
+            "for a bug report. Home folders and passwords are left out."
+        )
+        self.btn_copy_diagnostics.setStyleSheet("padding: 8px 16px; font-weight: bold;")
+        self.btn_copy_diagnostics.clicked.connect(self.parent_app.copy_diagnostics)
+        self.lbl_diagnostics = QLabel("")
+        self.lbl_diagnostics.setStyleSheet("color: #9aa0a6;")
+        self.lbl_diagnostics.setWordWrap(True)
+        help_row.addWidget(self.btn_open_logs)
+        help_row.addWidget(self.btn_copy_diagnostics)
+        help_row.addWidget(self.lbl_diagnostics, 1)
+        l_app_inner.addLayout(help_row)
         l_global.addWidget(gb_app)
 
         # --- Global Saving Settings ---
@@ -3229,9 +3261,9 @@ class MeterApp(QMainWindow):
         if os.environ.get("APERA_NO_BACKGROUND_CHECKS") == "1":
             return
         self.background_update_checked.connect(self._on_background_update_checked)
-        QTimer.singleShot(3000, self._background_update_check)
+        QTimer.singleShot(3000, self._automatic_update_check)
         self._daily_update_timer = QTimer(self)
-        self._daily_update_timer.timeout.connect(self._background_update_check)
+        self._daily_update_timer.timeout.connect(self._automatic_update_check)
         self._daily_update_timer.start(24 * 60 * 60 * 1000)
 
         def refresh_shortcut():
@@ -3243,6 +3275,19 @@ class MeterApp(QMainWindow):
                 print(f"Couldn't refresh the desktop shortcut: {e}")
 
         threading.Thread(target=refresh_shortcut, daemon=True).start()
+
+    def update_check_on_start(self):
+        """Settings → "Check for updates when the app starts" (on unless the user turned it off)."""
+        return bool(self.meter1.config.get("check_updates_on_start", True))
+
+    def set_update_check_on_start(self, on):
+        self.meter1.config["check_updates_on_start"] = bool(on)
+        self.meter1.save_config()
+
+    def _automatic_update_check(self):
+        """The quiet check a few seconds after start and once a day; skipped when turned off."""
+        if self.update_check_on_start():
+            self._background_update_check()
 
     def _background_update_check(self):
         import updater
@@ -3411,8 +3456,55 @@ class MeterApp(QMainWindow):
         else:
             args = [sys.executable] + sys.argv
 
+        single_instance.release()  # otherwise the new copy finds this one still running and quits
         subprocess.Popen(args)  # noqa: S603 - relaunches this same program
         QApplication.quit()
+
+    # --- Diagnostics (Settings → Open Log Folder / Copy Diagnostics) ----------
+    def open_log_folder(self, checked=False):
+        try:
+            diagnostics.open_folder(diagnostics.log_folder(crash_log.log_path()))
+        except OSError as e:
+            QMessageBox.warning(self, "Open Log Folder", f"Couldn't open the log folder.\n\n{e}")
+
+    def _diagnostics_extra(self):
+        """App-specific lines for the report: meter connections and the OCR model (nothing secret)."""
+        extra = {}
+        for meter in (self.meter1, self.meter2):
+            ser = meter.ser
+            if meter.is_connected and ser is not None:
+                state = f"connected on {ser.port}"
+            else:
+                state = f"not connected (port: {meter.port_combo.currentText() or 'none'})"
+            model = meter.model_label.text().removeprefix("Model: ")
+            if model and model != "Unknown":
+                state += f", model {model}"
+            if meter.is_recording:
+                state += ", recording"
+            extra[f"Meter {meter.meter_id}"] = state
+        ocr = getattr(self, "ocr_pipeline", None)
+        extra["OCR model"] = "loaded" if getattr(ocr, "model", None) is not None else "not loaded"
+        output_log = os.path.join(DATA_DIR, "app.log")
+        if os.path.exists(output_log):
+            extra["Output log"] = output_log
+        return extra
+
+    def diagnostics_text(self):
+        return diagnostics.report(
+            APP_NAME,
+            __version__,
+            APP_DIR,
+            settings_dir=CONFIG_DIR,
+            data_dir=DATA_DIR,
+            log_path=crash_log.log_path(),
+            extra=self._diagnostics_extra(),
+        )
+
+    def copy_diagnostics(self, checked=False):
+        QApplication.clipboard().setText(self.diagnostics_text())
+        self.settings_tab.lbl_diagnostics.setText(
+            "Diagnostics copied. Paste them into a GitHub issue or an email."
+        )
 
     def _poll_camera_frame(self):
         if self._latest_camera_frame is not None:
@@ -3931,7 +4023,14 @@ def main(argv=None):
     crash_log.setup("apera_meter", os.path.join(DATA_DIR, "logs"), __version__)
     _log_to_file_if_needed()
     app = create_app([a for a in argv if a != "--self-test"])
+    # One copy at a time (two would fight over the meters' COM ports): opening the app again
+    # brings this window to the front instead. The release-build self-test takes a lock of its
+    # own, so it still runs (and checks the lock works) while the app is open.
+    guard = single_instance.acquire(f"{APP_NAME} self-test" if self_test else APP_NAME)
+    if guard is None:
+        sys.exit(0)
     window = MeterApp()
+    guard.set_window(window)
     window.show()
     if self_test:
         sys.exit(_self_test(app, window))

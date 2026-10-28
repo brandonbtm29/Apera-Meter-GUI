@@ -57,7 +57,7 @@ icon, open **Settings → Create Desktop Shortcut**.
 
 ### Option B: run from source (Windows or macOS)
 
-**Easiest:** double-click `Setup_Windows.bat` (Windows) or `Setup_Mac.command` (macOS) once. It creates the `.venv` folder and installs everything the app needs (it asks whether to add the camera OCR); run it again any time to repair or update the packages. The manual steps follow.
+**Easiest:** double-click `Launch_Windows.bat` (Windows) or `Launch_Mac.command` (macOS). The first time, it sets itself up: it creates the `.venv` folder and installs everything the app needs (it asks whether to add the camera OCR), which takes a minute or two, then starts the app. After that it just starts the app. `Setup_Windows.bat` / `Setup_Mac.command` do the same setup again, to repair or update the packages or to add the camera OCR later. The manual steps follow.
 
 You need **Python 3.11 or newer**, **Git**, and **[Git LFS](https://git-lfs.com)** (for the
 135 MB OCR model; skip it if you won't use the camera).
@@ -77,7 +77,11 @@ Then install and start it:
 | Start | double-click `Launch_Windows.bat` | double-click `Launch_Mac.command` |
 
 The launchers check that everything is installed, start the app and then close their console or
-Terminal window. If something is missing, the window stays open and shows the error.
+Terminal window. If there's no `.venv` yet, they set it up first. If something is missing or setup
+fails, the window stays open and shows the error.
+
+Only one copy of the app runs at a time (two would fight over a meter's COM port). Opening it again
+brings the open window to the front.
 
 Leave out `[ocr]` (i.e. `pip install -e .`) to skip PyTorch, which is a large download. The
 app still runs; only the camera reading is unavailable.
@@ -96,7 +100,7 @@ The app opens without a meter attached, so you can look around first. Plug a met
 | **Meter 1 / Meter 2** tabs | **Connect**, **Start Recording**, **Save Log to Excel**, **Quick Save** (overwrite the auto-save file), **Download Raw Memory**, **Sync Meter Time**, **Recover Session**, **Clear Data** |
 | Right panel | Connection, metadata tokens for file names, save/auto-save/auto-stop, experiment notes |
 | Left panel | Axis limits, graph units, time vs. duration axis, event log |
-| **Settings** tab | Save folder and file-name template for both meters, Discord alerts, settings folder, version, **Create Desktop Shortcut** and **Check for Updates** |
+| **Settings** tab | Save folder and file-name template for both meters, Discord alerts, settings folder, version, **Create Desktop Shortcut**, **Check for Updates** (and whether to check when the app starts), **Open Log Folder** and **Copy Diagnostics** |
 | **Live OCR Feed** tab | Camera on/off, draw the reading area, OCR filters and logging |
 | **Dataset Curation** tab | Review and label camera crops for retraining the OCR model |
 
@@ -137,6 +141,9 @@ webhook URL can post to that channel.
 ## Updating
 
 **Settings → Check for Updates** asks GitHub for the newest release and shows what changed.
+The app also checks quietly a few seconds after it starts (and once a day while it runs) and turns
+the version number amber when there's a newer release. To turn that off, untick **Check for updates
+when the app starts** in the same box.
 
 - **Running from source (a git clone):** **Update and Restart** moves the clone to the new release,
   reinstalls its Python packages and restarts the app. If you've edited the app's files or made
@@ -162,13 +169,15 @@ webhook URL can post to that channel.
 | `ocr_pipeline.py`, `ocr_model.py` | Camera capture, preprocessing and the OCR network |
 | `dataset_curation_tab.py` | The labelling tab |
 | `settings_location.py` | Where settings are stored (shared with the lab's other apps) |
+| `crash_log.py`, `single_instance.py`, `diagnostics.py` | Error log, one-copy-at-a-time lock, and the Open Log Folder / Copy Diagnostics helpers (shared with the lab's other apps) |
 | `updater.py` | Checks GitHub for a newer release and updates a git clone |
 | `shortcuts.py` | Creates the desktop shortcut (Windows `.lnk`, macOS `.app`, Linux `.desktop`) |
 | `Scripts/` | Build script, log repair (`cleanup_1000x_gaps.py`), screenshot generator |
 
 ## Good to know
 
-- **Error log**: errors, with tracebacks (also from background threads), go to `logs/apera_meter.log` in the data folder. An unexpected error is shown in a dialog and the app keeps running instead of closing. A hard crash (e.g. in a driver) leaves a `.fatal.log` next to it.
+- **Error log**: errors, with tracebacks (also from background threads), go to `logs/apera_meter.log` in the data folder. An unexpected error is shown in a dialog and the app keeps running instead of closing. A hard crash (e.g. in a driver) leaves a `.fatal.log` next to it. **Settings → Open Log Folder** shows it.
+- **Reporting a problem**: **Settings → Copy Diagnostics** copies the app version, its folders, the meter connections and the end of the error log. Paste it into a GitHub issue or an email. Home-folder names and anything that looks like a password or token are left out.
 - Only the **conductivity** and **temperature** readings are logged; other meter modes (pH,
   TDS, salinity…) aren't handled.
 - If a log shows sudden 1000× jumps (readings mixing µS/cm and mS/cm),
