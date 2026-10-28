@@ -57,6 +57,8 @@ only-include = [
     "dataset_curation_tab.py",
     "settings_location.py",
     "crash_log.py",
+    "single_instance.py",
+    "diagnostics.py",
     "shortcuts.py",
     "updater.py",
 ]
