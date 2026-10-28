@@ -6,6 +6,8 @@ bump the first. The format is based on [Keep a Changelog](https://keepachangelog
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-28
+
 ### Added
 - **Error log**: errors, with tracebacks (also from background threads), go to `logs/apera_meter.log` in
   the data folder. An unexpected error is shown in a dialog and the app keeps running instead of closing.
@@ -124,7 +126,8 @@ with Claude (Anthropic).
 - Personal email addresses, home-folder paths and machine names were removed from the files and
   the git history. Commit IDs before this release changed as a result.
 
-[Unreleased]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v0.1.0...v1.1.0
