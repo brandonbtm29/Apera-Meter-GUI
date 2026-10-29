@@ -6,6 +6,8 @@ bump the first. The format is based on [Keep a Changelog](https://keepachangelog
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-10-29
+
 ### Fixed
 - Camera OCR: while a meter is recording, a display the OCR can't read (or a reading it turns down) is
   logged as 0.0 in every OCR mode, so the gap shows in the data. Before, only the default Dual-Mode
@@ -140,7 +142,8 @@ with Claude (Anthropic).
 - Personal email addresses, home-folder paths and machine names were removed from the files and
   the git history. Commit IDs before this release changed as a result.
 
-[Unreleased]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.4.2...HEAD
+[1.4.2]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.2.0...v1.3.0
