@@ -58,6 +58,8 @@ only-include = [
     "ocr_review.py",
     "settings_location.py",
     "crash_log.py",
+    "single_instance.py",
+    "diagnostics.py",
     "shortcuts.py",
     "updater.py",
 ]

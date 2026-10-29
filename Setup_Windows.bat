@@ -1,6 +1,7 @@
 @echo off
-rem One-click setup for Apera Meter GUI: creates this folder's own Python environment (.venv)
-rem and installs everything the app needs. Run it again any time to repair or update it.
+rem Repair or reinstall Apera Meter GUI: creates this folder's own Python environment (.venv) if
+rem needed and (re)installs everything the app needs. Launch_Windows.bat does this by itself the
+rem first time, so you only need this to repair or update the packages, or to add the camera OCR.
 cd /d "%~dp0"
 echo Setting up Apera Meter GUI in %CD%
 echo.

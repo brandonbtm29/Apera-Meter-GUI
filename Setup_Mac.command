@@ -1,6 +1,8 @@
 #!/bin/bash
-# One-click setup for Apera Meter GUI on macOS: creates this folder's own Python environment
-# (.venv) and installs everything the app needs. Run it again any time to repair or update it.
+# Repair or reinstall Apera Meter GUI on macOS: creates this folder's own Python environment
+# (.venv) if needed and (re)installs everything the app needs. Launch_Mac.command does this by
+# itself the first time, so you only need this to repair or update the packages, or to add the
+# camera OCR.
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 fail() { echo; echo "$1"; read -r -p "Press Enter to close"; exit 1; }
 new_enough() { "$1" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; }

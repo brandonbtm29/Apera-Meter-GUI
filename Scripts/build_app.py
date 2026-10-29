@@ -80,6 +80,14 @@ def build():
         f"{ICON}{sep}.",
         "--collect-data",
         "qdarktheme",
+        # The one-copy-at-a-time lock and Copy Diagnostics. single_instance imports QtNetwork
+        # only inside a function, so name it here to be sure it is bundled.
+        "--hidden-import",
+        "single_instance",
+        "--hidden-import",
+        "diagnostics",
+        "--hidden-import",
+        "PyQt6.QtNetwork",
         *torchvision_extensions(sep),
         "--exclude-module",
         "PySide6",

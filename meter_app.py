@@ -1,7 +1,7 @@
 import sys
 import os
 
-__version__ = "1.3.0"  # single source of truth; read by pyproject.toml
+__version__ = "1.4.2"  # single source of truth; read by pyproject.toml
 
 # Columns of Sessions/dataset_session_*/readings.csv (Auto-Record OCR Training Dataset / Manual Snap).
 # The first five are the original format ("screen_val" holds the reading in mS/cm). The rest label each
@@ -53,7 +53,10 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 import settings_location
 import crash_log
+import diagnostics
+import single_instance
 
+APP_NAME = "Apera Meter GUI"
 APP_DIR = settings_location.app_folder(script_dir)
 CONFIG_DIR = settings_location.resolve(APP_DIR, DATA_DIR)
 SETTINGS_FILES = ["config.json", "global_rois.json"]
@@ -2214,6 +2217,35 @@ class SettingsTab(QWidget):
         update_row.addWidget(self.btn_shortcut)
         update_row.addWidget(self.btn_update)
         l_app_inner.addLayout(update_row)
+
+        self.chk_update_on_start = QCheckBox("Check for updates when the app starts")
+        self.chk_update_on_start.setToolTip(
+            "Asks GitHub for the latest release a few seconds after start and once a day while the app "
+            "runs. If there is one, the version number turns amber. Nothing about you is sent."
+        )
+        self.chk_update_on_start.setChecked(self.parent_app.update_check_on_start())
+        self.chk_update_on_start.toggled.connect(self.parent_app.set_update_check_on_start)
+        l_app_inner.addWidget(self.chk_update_on_start)
+
+        help_row = QHBoxLayout()
+        self.btn_open_logs = QPushButton("📂 Open Log Folder")
+        self.btn_open_logs.setToolTip("Show the folder with the app's error log")
+        self.btn_open_logs.setStyleSheet("padding: 8px 16px; font-weight: bold;")
+        self.btn_open_logs.clicked.connect(self.parent_app.open_log_folder)
+        self.btn_copy_diagnostics = QPushButton("📋 Copy Diagnostics")
+        self.btn_copy_diagnostics.setToolTip(
+            "Copy the app version, folders, meter connections and the end of the error log, "
+            "for a bug report. Home folders and passwords are left out."
+        )
+        self.btn_copy_diagnostics.setStyleSheet("padding: 8px 16px; font-weight: bold;")
+        self.btn_copy_diagnostics.clicked.connect(self.parent_app.copy_diagnostics)
+        self.lbl_diagnostics = QLabel("")
+        self.lbl_diagnostics.setStyleSheet("color: #9aa0a6;")
+        self.lbl_diagnostics.setWordWrap(True)
+        help_row.addWidget(self.btn_open_logs)
+        help_row.addWidget(self.btn_copy_diagnostics)
+        help_row.addWidget(self.lbl_diagnostics, 1)
+        l_app_inner.addLayout(help_row)
         l_global.addWidget(gb_app)
 
         # --- Global Saving Settings ---
@@ -3039,6 +3071,7 @@ class MeterApp(QMainWindow):
         from ocr_pipeline import MeterOCR
 
         self.ocr_pipeline = MeterOCR()
+        self._apply_ocr_settings()  # the saved threshold and smoothing, before the first reading
 
         self.ocr_readings_signal.connect(self.on_ocr_readings)
         self.ocr_pipeline.add_callback(lambda readings: self.ocr_readings_signal.emit(readings))
@@ -3264,9 +3297,9 @@ class MeterApp(QMainWindow):
         if os.environ.get("APERA_NO_BACKGROUND_CHECKS") == "1":
             return
         self.background_update_checked.connect(self._on_background_update_checked)
-        QTimer.singleShot(3000, self._background_update_check)
+        QTimer.singleShot(3000, self._automatic_update_check)
         self._daily_update_timer = QTimer(self)
-        self._daily_update_timer.timeout.connect(self._background_update_check)
+        self._daily_update_timer.timeout.connect(self._automatic_update_check)
         self._daily_update_timer.start(24 * 60 * 60 * 1000)
 
         def refresh_shortcut():
@@ -3278,6 +3311,19 @@ class MeterApp(QMainWindow):
                 print(f"Couldn't refresh the desktop shortcut: {e}")
 
         threading.Thread(target=refresh_shortcut, daemon=True).start()
+
+    def update_check_on_start(self):
+        """Settings → "Check for updates when the app starts" (on unless the user turned it off)."""
+        return bool(self.meter1.config.get("check_updates_on_start", True))
+
+    def set_update_check_on_start(self, on):
+        self.meter1.config["check_updates_on_start"] = bool(on)
+        self.meter1.save_config()
+
+    def _automatic_update_check(self):
+        """The quiet check a few seconds after start and once a day; skipped when turned off."""
+        if self.update_check_on_start():
+            self._background_update_check()
 
     def _background_update_check(self):
         import updater
@@ -3446,8 +3492,55 @@ class MeterApp(QMainWindow):
         else:
             args = [sys.executable] + sys.argv
 
+        single_instance.release()  # otherwise the new copy finds this one still running and quits
         subprocess.Popen(args)  # noqa: S603 - relaunches this same program
         QApplication.quit()
+
+    # --- Diagnostics (Settings → Open Log Folder / Copy Diagnostics) ----------
+    def open_log_folder(self, checked=False):
+        try:
+            diagnostics.open_folder(diagnostics.log_folder(crash_log.log_path()))
+        except OSError as e:
+            QMessageBox.warning(self, "Open Log Folder", f"Couldn't open the log folder.\n\n{e}")
+
+    def _diagnostics_extra(self):
+        """App-specific lines for the report: meter connections and the OCR model (nothing secret)."""
+        extra = {}
+        for meter in (self.meter1, self.meter2):
+            ser = meter.ser
+            if meter.is_connected and ser is not None:
+                state = f"connected on {ser.port}"
+            else:
+                state = f"not connected (port: {meter.port_combo.currentText() or 'none'})"
+            model = meter.model_label.text().removeprefix("Model: ")
+            if model and model != "Unknown":
+                state += f", model {model}"
+            if meter.is_recording:
+                state += ", recording"
+            extra[f"Meter {meter.meter_id}"] = state
+        ocr = getattr(self, "ocr_pipeline", None)
+        extra["OCR model"] = "loaded" if getattr(ocr, "model", None) is not None else "not loaded"
+        output_log = os.path.join(DATA_DIR, "app.log")
+        if os.path.exists(output_log):
+            extra["Output log"] = output_log
+        return extra
+
+    def diagnostics_text(self):
+        return diagnostics.report(
+            APP_NAME,
+            __version__,
+            APP_DIR,
+            settings_dir=CONFIG_DIR,
+            data_dir=DATA_DIR,
+            log_path=crash_log.log_path(),
+            extra=self._diagnostics_extra(),
+        )
+
+    def copy_diagnostics(self, checked=False):
+        QApplication.clipboard().setText(self.diagnostics_text())
+        self.settings_tab.lbl_diagnostics.setText(
+            "Diagnostics copied. Paste them into a GitHub issue or an email."
+        )
 
     def _poll_camera_frame(self):
         if self._latest_camera_frame is not None:
@@ -3456,6 +3549,17 @@ class MeterApp(QMainWindow):
             rois = self._latest_camera_rois
             self._latest_camera_frame = None
             self.ocr_feed_tab.receive_frame_threadsafe(frame, rois)
+
+    def _apply_ocr_settings(self):
+        """Give the OCR pipeline the settings it reads itself (confidence threshold, smoothing).
+
+        Called when the pipeline is created and whenever an OCR setting changes; call it again
+        anywhere a new pipeline is made.
+        """
+        if getattr(self, "ocr_pipeline", None) is None:
+            return
+        self.ocr_pipeline.use_midpoint_filter = self.ocr_midpoint_chk.isChecked()
+        self.ocr_pipeline.min_confidence = self.ocr_conf_spin.value()
 
     def _save_ocr_config(self):
         import json
@@ -3475,9 +3579,7 @@ class MeterApp(QMainWindow):
         self.shared_config["ocr_phys_max_chk"] = self.ocr_phys_max_chk.isChecked()
         self.shared_config["ocr_phys_max_spin"] = self.ocr_phys_max_spin.value()
 
-        if hasattr(self, "ocr_pipeline") and self.ocr_pipeline is not None:
-            self.ocr_pipeline.use_midpoint_filter = self.ocr_midpoint_chk.isChecked()
-            self.ocr_pipeline.min_confidence = self.ocr_conf_spin.value()
+        self._apply_ocr_settings()
         try:
             with open(self.config_path, "w") as f:
                 json.dump(self.shared_config, f, indent=4)
@@ -3735,20 +3837,18 @@ class MeterApp(QMainWindow):
                 cv_raw = _get_best_permutation(val_cv, False)
                 result = cnn_raw if cnn_raw != 0.0 else cv_raw
             else:
-                result = cnn_raw if cnn_raw != 0.0 else None
+                result = cnn_raw
         else:
-            result = final_val if final_val != 0.0 else None
+            result = final_val
 
-        if (
-            result is not None
-            and getattr(self, "ocr_phys_max_chk", None)
-            and self.ocr_phys_max_chk.isChecked()
-        ):
+        if result and getattr(self, "ocr_phys_max_chk", None) and self.ocr_phys_max_chk.isChecked():
             limit_spin = getattr(self, "ocr_phys_max_spin", None)
             if limit_spin and result > limit_spin.value():
-                return None
+                return 0.0
 
-        return result
+        # No usable reading (display unreadable, below the confidence threshold or filtered out):
+        # 0.0, in every OCR mode, so the gap shows up in the log while recording.
+        return result or 0.0
 
     def on_ocr_readings(self, readings):
         import time
@@ -3761,11 +3861,12 @@ class MeterApp(QMainWindow):
         now = datetime.datetime.now()
         dt_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
+        # One confidence threshold (OCR settings) for both meters. Read it before either meter's
+        # branch so Meter 2 still has it when Meter 1 sent no reading.
+        min_conf = getattr(self.ocr_pipeline, "min_confidence", 0.0) if hasattr(self, "ocr_pipeline") else 0.0
+
         if len(readings) > 0 and readings[0] is not None:
             c1_cnn, c1_cv, c1_conf = readings[0]
-            min_conf = (
-                getattr(self.ocr_pipeline, "min_confidence", 0.0) if hasattr(self, "ocr_pipeline") else 0.0
-            )
             rejected = False
             if min_conf > 0.0 and c1_conf < min_conf:
                 c1_cnn = 0.0
@@ -3776,21 +3877,17 @@ class MeterApp(QMainWindow):
                 last_ms = getattr(self.meter1, "last_serial_cond_ms", 0.0)
                 if last_ms == 0.0:
                     last_ms = getattr(self.meter1, "last_ocr_cond_ms", 0.0)
-                c1 = self._apply_ocr_consensus(c1_cnn, c1_cv, last_ms)
-                if c1 is not None and c1 != 0.0:
+                c1 = self._apply_ocr_consensus(c1_cnn, c1_cv, last_ms)  # 0.0 = no usable reading
+                if c1 != 0.0:
                     self.meter1.last_ocr_cond_ms = c1
-                if c1 is not None:
-                    self._review_ocr_reading(1, self.meter1, readings[0][0], c1, c1_conf)
-                if c1 is not None:
-                    row_data1 = (dt_str, "OCR", f"{c1 * 1000:.1f}", f"{c1:.3f}", "-", f"{c1_conf * 100:.1f}")
-                    if (
-                        self.meter1.is_recording
-                        and getattr(self, "ocr_autolog_checkbox", None)
-                        and self.ocr_autolog_checkbox.isChecked()
-                    ):
-                        self.meter1.signals.update_tree.emit(now, row_data1)
-                elif rejected:
-                    pass
+                self._review_ocr_reading(1, self.meter1, readings[0][0], c1, c1_conf)
+                row_data1 = (dt_str, "OCR", f"{c1 * 1000:.1f}", f"{c1:.3f}", "-", f"{c1_conf * 100:.1f}")
+                if (
+                    self.meter1.is_recording
+                    and getattr(self, "ocr_autolog_checkbox", None)
+                    and self.ocr_autolog_checkbox.isChecked()
+                ):
+                    self.meter1.signals.update_tree.emit(now, row_data1)
 
             # Update status bar indicator for Meter 1
             if hasattr(self, "lbl_ocr_status"):
@@ -3815,19 +3912,17 @@ class MeterApp(QMainWindow):
                 last_ms = getattr(self.meter2, "last_serial_cond_ms", 0.0)
                 if last_ms == 0.0:
                     last_ms = getattr(self.meter2, "last_ocr_cond_ms", 0.0)
-                c2 = self._apply_ocr_consensus(c2_cnn, c2_cv, last_ms)
-                if c2 is not None and c2 != 0.0:
+                c2 = self._apply_ocr_consensus(c2_cnn, c2_cv, last_ms)  # 0.0 = no usable reading
+                if c2 != 0.0:
                     self.meter2.last_ocr_cond_ms = c2
-                if c2 is not None:
-                    self._review_ocr_reading(2, self.meter2, readings[1][0], c2, c2_conf)
-                if c2 is not None:
-                    row_data2 = (dt_str, "OCR", f"{c2 * 1000:.1f}", f"{c2:.3f}", "-", f"{c2_conf * 100:.1f}")
-                    if (
-                        self.meter2.is_recording
-                        and getattr(self, "ocr_autolog_checkbox", None)
-                        and self.ocr_autolog_checkbox.isChecked()
-                    ):
-                        self.meter2.signals.update_tree.emit(now, row_data2)
+                self._review_ocr_reading(2, self.meter2, readings[1][0], c2, c2_conf)
+                row_data2 = (dt_str, "OCR", f"{c2 * 1000:.1f}", f"{c2:.3f}", "-", f"{c2_conf * 100:.1f}")
+                if (
+                    self.meter2.is_recording
+                    and getattr(self, "ocr_autolog_checkbox", None)
+                    and self.ocr_autolog_checkbox.isChecked()
+                ):
+                    self.meter2.signals.update_tree.emit(now, row_data2)
 
     def _review_ocr_reading(self, meter_id, meter, ocr_display, value_ms, conf):
         """While Auto-Record is on, snapshot logged OCR readings that look wrong (see ocr_review.py).
@@ -4021,7 +4116,14 @@ def main(argv=None):
     crash_log.setup("apera_meter", os.path.join(DATA_DIR, "logs"), __version__)
     _log_to_file_if_needed()
     app = create_app([a for a in argv if a != "--self-test"])
+    # One copy at a time (two would fight over the meters' COM ports): opening the app again
+    # brings this window to the front instead. The release-build self-test takes a lock of its
+    # own, so it still runs (and checks the lock works) while the app is open.
+    guard = single_instance.acquire(f"{APP_NAME} self-test" if self_test else APP_NAME)
+    if guard is None:
+        sys.exit(0)
     window = MeterApp()
+    guard.set_window(window)
     window.show()
     if self_test:
         sys.exit(_self_test(app, window))

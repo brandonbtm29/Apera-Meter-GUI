@@ -7,10 +7,6 @@ bump the first. The format is based on [Keep a Changelog](https://keepachangelog
 ## [Unreleased]
 
 ### Added
-- **Error log**: errors, with tracebacks (also from background threads), go to `logs/apera_meter.log` in
-  the data folder. An unexpected error is shown in a dialog and the app keeps running instead of closing.
-- `Setup_Windows.bat` / `Setup_Mac.command`: one double-click creates the `.venv` and installs everything
-  (asks whether to add the camera OCR).
 - **Auto-Record OCR Training Dataset** now records what the meter itself reported for every saved crop:
   `readings.csv` gains the displayed digits, the unit (µS/cm or mS/cm), the meter's own clock time, the
   previous reading (to tell a steady display from one that was changing) and the live OCR result. A
@@ -27,6 +23,44 @@ bump the first. The format is based on [Keep a Changelog](https://keepachangelog
   - a **Reject** button; accept and reject decisions are saved in `curation_log.csv` and survive
     reopening the session
   - accepted crops are also copied at full resolution to `Sessions/Master_Dataset_native/`
+
+## [1.4.2] - 2026-10-29
+
+### Fixed
+- Camera OCR: while a meter is recording, a display the OCR can't read (or a reading it turns down) is
+  logged as 0.0 in every OCR mode, so the gap shows in the data. Before, only the default Dual-Mode
+  setting did this; with Dual-Mode off, with **Discard Bad Reads (Return 0.0)** on, or for a reading
+  above **Enforce Absolute Max**, that second was skipped with no row. A 0.0 is never used as the last
+  good reading.
+
+## [1.4.1] - 2026-10-29
+
+### Fixed
+- Camera OCR: Meter 2's camera reading no longer depends on a Meter 1 reading being present.
+- Camera OCR: the saved confidence threshold and smoothing setting now apply as soon as the app
+  starts, not only after changing one of them.
+
+## [1.4.0] - 2026-10-28
+
+### Added
+- **Error log**: errors, with tracebacks (also from background threads), go to `logs/apera_meter.log` in
+  the data folder. An unexpected error is shown in a dialog and the app keeps running instead of closing.
+- `Setup_Windows.bat` / `Setup_Mac.command`: one double-click creates the `.venv` and installs everything
+  (asks whether to add the camera OCR). Use them to repair or reinstall; a first install no longer needs
+  them (see the next point).
+- `Launch_Windows.bat` and `Launch_Mac.command` set the app up by themselves the first time: they create
+  the `.venv`, install what the app needs (asking whether to add the camera OCR), then start the app. It
+  takes a minute or two; after that they start the app straight away. If setup fails, the window stays
+  open and shows why.
+- Only one copy of the app runs at a time, so two copies can't fight over a meter's COM port. Opening it
+  again brings the open window to the front. Restarting after an update or a settings-folder change
+  still works.
+- **Open Log Folder** and **Copy Diagnostics** buttons in **Settings → Application Preferences**. Copy
+  Diagnostics copies the app version, its folders, the meter connections and the end of the error log,
+  ready to paste into a GitHub issue or an email. Home-folder names and anything that looks like a
+  password or token are left out.
+- A **Check for updates when the app starts** checkbox in the same box (on by default). Turning it off
+  also stops the daily check; **Check for Updates** still works by hand.
 
 ## [1.3.0] - 2026-10-15
 
@@ -126,7 +160,10 @@ with Claude (Anthropic).
 - Personal email addresses, home-folder paths and machine names were removed from the files and
   the git history. Commit IDs before this release changed as a result.
 
-[Unreleased]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.4.2...HEAD
+[1.4.2]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.4.1...v1.4.2
+[1.4.1]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.4.0...v1.4.1
+[1.4.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v0.1.0...v1.1.0
