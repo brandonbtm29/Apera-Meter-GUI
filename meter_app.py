@@ -3,6 +3,18 @@ import os
 
 __version__ = "1.3.0"  # single source of truth; read by pyproject.toml
 
+# Columns of Sessions/dataset_session_*/readings.csv (Auto-Record OCR Training Dataset / Manual Snap).
+# The first five are the original format ("screen_val" holds the reading in mS/cm). The rest label each
+# crop with what the meter itself reported, for LCD-Digit-CRNN's auto-labelled training data:
+# display_str = the digits on the LCD as sent over serial, display_unit = uS/cm or mS/cm,
+# meter_clock = the meter's own timestamp (it drifts from the PC clock), prev_display_str = the previous
+# serial reading from this meter (equal values = the display was stable), ocr_value/ocr_conf = the live
+# OCR result when the frame was saved, crop_file = the crop's file name in extracted_crops/.
+DATASET_CSV_HEADER = (
+    "timestamp,meter_id,screen_val,unit,raw_cond,"
+    "display_str,display_unit,meter_clock,prev_display_str,ocr_value,ocr_conf,crop_file\n"
+)
+
 # --- Code vs data -----------------------------------------------------------
 # Data (exports, backups, logs) lives outside the code. The app runs with the data
 # folder as its working directory, so relative paths like "Data/" land there.
@@ -1501,6 +1513,10 @@ class MeterController(QWidget):
 
                 row_data = (dt_str, mode_str, cond_us, cond_ms, f"{temp_c:.1f}")
 
+                # Previous serial reading from this meter, recorded with dataset crops as a stability check
+                prev_display_str = getattr(self, "last_dataset_display_str", "")
+                self.last_dataset_display_str = screen_str
+
                 app = self.parent_app
                 is_continuous = getattr(app, "shared_config", {}).get("dataset_continuous", False)
                 is_manual = getattr(app, "manual_snap_requested", False)
@@ -1521,7 +1537,7 @@ class MeterController(QWidget):
                     os.makedirs(frames_dir, exist_ok=True)
                     app.dataset_csv_path = os.path.join(app.dataset_session_dir, "readings.csv")
                     with open(app.dataset_csv_path, "w", encoding="utf-8") as f:
-                        f.write("timestamp,meter_id,screen_val,unit,raw_cond\n")
+                        f.write(DATASET_CSV_HEADER)
                     rois_path = os.path.join(app.dataset_session_dir, "rois.json")
                     with open(rois_path, "w") as f:
                         json.dump(app.ocr_pipeline.rois, f)
@@ -1551,6 +1567,9 @@ class MeterController(QWidget):
                         m_id=self.meter_id,
                         m_flag=is_manual,
                         h_lag=hw_lag,
+                        u_str=unit_str,
+                        m_clock=dt_str,
+                        p_disp=prev_display_str,
                     ):
                         import cv2
                         import os
@@ -1564,9 +1583,8 @@ class MeterController(QWidget):
                                 app.dataset_session_dir, "frames", f"frame_{cap_ts}.jpg"
                             )
                             cv2.imwrite(frame_path, frame)
-                            with open(app.dataset_csv_path, "a", encoding="utf-8") as f:
-                                f.write(f"{cap_ts},{m_id},{c_ms},mS,{r_cond}\n")
 
+                            crop_file = ""
                             roi_imgs, _ = app.ocr_pipeline.extract_crops(frame)
                             roi_name = f"m{m_id}_cond"
                             roi_img = roi_imgs.get(roi_name)
@@ -1578,6 +1596,23 @@ class MeterController(QWidget):
                                 filename = f"{s_val}_{cap_ts:.3f}_{actual_frame_ts:.3f}_{m_id}.jpg"
                                 out_path = os.path.join(crop_dir, filename)
                                 cv2.imwrite(out_path, cnn_img)
+                                # Lossless copy at the camera's resolution (no 128x128 squash), so
+                                # LCD-Digit-CRNN can try other input sizes and aspect ratios.
+                                native_dir = os.path.join(app.dataset_session_dir, "extracted_crops_native")
+                                os.makedirs(native_dir, exist_ok=True)
+                                native_name = os.path.splitext(filename)[0] + ".png"
+                                cv2.imwrite(os.path.join(native_dir, native_name), roi_img)
+                                crop_file = filename
+
+                            ocr_val, ocr_conf = "", ""
+                            parsed = getattr(app.ocr_pipeline, "last_parsed_vals", {}).get(roi_name)
+                            if isinstance(parsed, tuple) and len(parsed) == 3:
+                                ocr_val, ocr_conf = f"{parsed[0]:g}", f"{parsed[2]:.4f}"
+                            with open(app.dataset_csv_path, "a", encoding="utf-8") as f:
+                                f.write(
+                                    f"{cap_ts},{m_id},{c_ms},mS,{r_cond},"
+                                    f"{s_val},{u_str},{m_clock},{p_disp},{ocr_val},{ocr_conf},{crop_file}\n"
+                                )
 
                         if m_flag:
                             try:
@@ -3567,7 +3602,7 @@ class MeterApp(QMainWindow):
             os.makedirs(frames_dir, exist_ok=True)
             self.dataset_csv_path = os.path.join(self.dataset_session_dir, "readings.csv")
             with open(self.dataset_csv_path, "w", encoding="utf-8") as f:
-                f.write("timestamp,meter_id,screen_val,unit,raw_cond\n")
+                f.write(DATASET_CSV_HEADER)
 
             # Save ROIs immediately
             import json
@@ -3592,7 +3627,7 @@ class MeterApp(QMainWindow):
             os.makedirs(frames_dir, exist_ok=True)
             self.dataset_csv_path = os.path.join(self.dataset_session_dir, "readings.csv")
             with open(self.dataset_csv_path, "w", encoding="utf-8") as f:
-                f.write("timestamp,meter_id,screen_val,unit,raw_cond\n")
+                f.write(DATASET_CSV_HEADER)
             rois_path = os.path.join(self.dataset_session_dir, "rois.json")
             with open(rois_path, "w") as f:
                 json.dump(self.ocr_pipeline.rois, f)
@@ -3745,6 +3780,8 @@ class MeterApp(QMainWindow):
                 if c1 is not None and c1 != 0.0:
                     self.meter1.last_ocr_cond_ms = c1
                 if c1 is not None:
+                    self._review_ocr_reading(1, self.meter1, readings[0][0], c1, c1_conf)
+                if c1 is not None:
                     row_data1 = (dt_str, "OCR", f"{c1 * 1000:.1f}", f"{c1:.3f}", "-", f"{c1_conf * 100:.1f}")
                     if (
                         self.meter1.is_recording
@@ -3782,6 +3819,8 @@ class MeterApp(QMainWindow):
                 if c2 is not None and c2 != 0.0:
                     self.meter2.last_ocr_cond_ms = c2
                 if c2 is not None:
+                    self._review_ocr_reading(2, self.meter2, readings[1][0], c2, c2_conf)
+                if c2 is not None:
                     row_data2 = (dt_str, "OCR", f"{c2 * 1000:.1f}", f"{c2:.3f}", "-", f"{c2_conf * 100:.1f}")
                     if (
                         self.meter2.is_recording
@@ -3789,6 +3828,57 @@ class MeterApp(QMainWindow):
                         and self.ocr_autolog_checkbox.isChecked()
                     ):
                         self.meter2.signals.update_tree.emit(now, row_data2)
+
+    def _review_ocr_reading(self, meter_id, meter, ocr_display, value_ms, conf):
+        """While Auto-Record is on, snapshot logged OCR readings that look wrong (see ocr_review.py).
+
+        The snapshots land in the current dataset session with a review.csv row, and the Dataset
+        Curation tab lists them under "Needs review" so they can be labelled and added to training.
+        """
+        if not (self.shared_config.get("dataset_continuous") and getattr(self, "dataset_session_dir", None)):
+            return
+        import time
+
+        from ocr_review import OcrAnomalyDetector, save_review_snapshot
+
+        if not hasattr(self, "_ocr_detectors"):
+            self._ocr_detectors = {}
+        key = (meter_id, self.dataset_session_dir)  # a new session starts with fresh history
+        det = self._ocr_detectors.get(key)
+        if det is None:
+            det = self._ocr_detectors[key] = OcrAnomalyDetector()
+        now = time.time()
+        last_t = getattr(meter, "last_data_time", None)
+        age = now - last_t if last_t else None
+        flags = det.check(value_ms, conf, getattr(meter, "last_serial_cond_ms", None), age)
+        if not det.should_snapshot(flags, now):
+            return
+        frame = getattr(getattr(self, "ocr_feed_tab", None), "last_frame", None)
+        if frame is None:
+            return
+        try:
+            roi_imgs, _ = self.ocr_pipeline.extract_crops(frame)
+            serial_display = getattr(meter, "last_dataset_display_str", "")
+            # Within 5 s of a serial reading the display shows that value, so it is a usable label.
+            label = serial_display if serial_display and age is not None and age <= 5 else "Unknown"
+            save_review_snapshot(
+                self.dataset_session_dir,
+                roi_imgs.get(f"m{meter_id}_cond"),
+                meter_id,
+                now,
+                label,
+                {
+                    "ocr_display": f"{ocr_display:g}",
+                    "ocr_logged_ms": f"{value_ms:g}",
+                    "ocr_conf": f"{conf:.4f}",
+                    "flags": " ".join(flags),
+                    "serial_display": serial_display,
+                    "serial_age_s": f"{age:.1f}" if age is not None else "",
+                    "local_median_ms": f"{det.median:g}" if det.median else "",
+                },
+            )
+        except Exception as e:
+            print(f"Review snapshot failed: {e}")
 
     def get_used_ports(self):
         used = []

@@ -1,7 +1,10 @@
 import os
+import csv
 import glob
+import shutil
 from datetime import datetime
 from PyQt6.QtWidgets import (
+    QComboBox,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -18,8 +21,25 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QSplitter,
 )
-from PyQt6.QtGui import QIcon, QColor
+from PyQt6.QtGui import QIcon, QColor, QPixmap
 from PyQt6.QtCore import Qt, QSize
+
+from ocr_review import capture_key, same_reading
+
+# Accept/reject decisions per session (Sessions/dataset_session_*/curation_log.csv), keyed by the
+# part of the crop's file name that survives relabelling.
+CURATION_LOG = "curation_log.csv"
+CURATION_LOG_HEADER = ["time", "capture", "decision", "label", "ocr_read", "flags", "file"]
+COL_LABEL, COL_THUMB, COL_OCR, COL_FLAGS, COL_DECISION = 4, 5, 6, 7, 8
+ROW_COLORS = {"accepted": "#1E5631", "rejected": "#3A3A3A", "needs review": "#7A5C00"}
+
+
+def _count_csv_rows(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return max(0, sum(1 for _ in f) - 1)
+    except OSError:
+        return 0
 
 
 class NumericTableWidgetItem(QTableWidgetItem):
@@ -52,6 +72,7 @@ class DatasetCurationTab(QWidget):
         self.current_dir = None
         self.image_files = []
         self.current_index = -1
+        self._review_info = {}
 
         main_layout = QVBoxLayout(self)
         self.stacked = QStackedWidget()
@@ -115,6 +136,15 @@ class DatasetCurationTab(QWidget):
         top_layout.addWidget(self.btn_back)
         top_layout.addSpacing(20)
         top_layout.addWidget(self.lbl_info)
+        top_layout.addSpacing(20)
+        self.combo_filter = QComboBox()
+        self.combo_filter.addItems(["Show all", "Needs review", "Not yet decided"])
+        self.combo_filter.setToolTip(
+            "Needs review: the OCR read something other than the label, the live OCR check flagged it,\n"
+            "or it has no label yet. Not yet decided: everything not accepted or rejected."
+        )
+        self.combo_filter.currentIndexChanged.connect(self._apply_filter)
+        top_layout.addWidget(self.combo_filter)
         top_layout.addStretch()
         top_layout.addWidget(self.lbl_m1_lag)
         top_layout.addSpacing(20)
@@ -134,9 +164,19 @@ class DatasetCurationTab(QWidget):
 
         # Image display
         self.table_images = QTableWidget()
-        self.table_images.setColumnCount(6)
+        self.table_images.setColumnCount(9)
         self.table_images.setHorizontalHeaderLabels(
-            ["Date/Time", "Burst Entry #", "Meter ID", "Hardware Lag (ms)", "Serial Value", "Thumbnail"]
+            [
+                "Date/Time",
+                "Burst Entry #",
+                "Meter ID",
+                "Hardware Lag (ms)",
+                "Serial Value",
+                "Thumbnail",
+                "OCR Read",
+                "Flags",
+                "Decision",
+            ]
         )
         self.table_images.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.table_images.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
@@ -162,6 +202,14 @@ class DatasetCurationTab(QWidget):
         self.btn_master_dataset.clicked.connect(self.add_to_master_dataset)
         self.btn_master_dataset.setEnabled(False)
 
+        self.btn_reject = QPushButton("✖ Reject")
+        self.btn_reject.setToolTip(
+            "Mark the selected crops as unusable for training (blurred, caught mid-update, wrong crop...)"
+        )
+        self.btn_reject.setStyleSheet("background-color: #7F8C8D; color: white; font-weight: bold;")
+        self.btn_reject.clicked.connect(self.reject_selected)
+        self.btn_reject.setEnabled(False)
+
         self.btn_set_sync = QPushButton("✅ Set as Sync Point (Calculate Lag)")
         self.btn_set_sync.setStyleSheet("background-color: #2ECC71; color: white; font-weight: bold;")
         self.btn_set_sync.clicked.connect(self.set_sync_point)
@@ -173,6 +221,7 @@ class DatasetCurationTab(QWidget):
         control_layout.addWidget(self.edit_label)
         control_layout.addWidget(self.btn_save_label)
         control_layout.addWidget(self.btn_master_dataset)
+        control_layout.addWidget(self.btn_reject)
         control_layout.addStretch()
         control_layout.addWidget(self.btn_set_sync)
         control_layout.addSpacing(20)
@@ -185,6 +234,17 @@ class DatasetCurationTab(QWidget):
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.lbl_preview = QLabel("Select a crop to preview it.")
+        self.lbl_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_preview.setMinimumHeight(180)
+        self.lbl_preview.setStyleSheet("background-color: #111; color: #AAA; border: 1px solid #444;")
+        self.lbl_preview_info = QLabel("")
+        self.lbl_preview_info.setWordWrap(True)
+        self.lbl_preview_info.setStyleSheet("font-size: 13px;")
+        right_layout.addWidget(self.lbl_preview)
+        right_layout.addWidget(self.lbl_preview_info)
+        right_layout.addSpacing(10)
 
         lbl_right_title = QLabel("Hardware Lag Measurements")
         lbl_right_title.setStyleSheet("font-weight: bold; font-size: 14px;")
@@ -223,7 +283,7 @@ class DatasetCurationTab(QWidget):
         right_layout.addLayout(m2_btn_layout)
 
         self.splitter.addWidget(right_widget)
-        self.splitter.setSizes([800, 300])  # Initial relative widths
+        self.splitter.setSizes([760, 380])  # Initial relative widths
 
         self.stacked.addWidget(self.page_viewer)
 
@@ -255,6 +315,9 @@ class DatasetCurationTab(QWidget):
             num_items = len(glob.glob(os.path.join(crop_dir, "*.jpg")))
             parent_name = os.path.basename(path)
             display_name = f"📁 {parent_name} \n   └ {num_items} images | Modified: {dt}"
+            n_flagged = _count_csv_rows(os.path.join(path, "review.csv"))
+            if n_flagged:
+                display_name += f" | ⚠ {n_flagged} flagged by live OCR check"
 
             item = QListWidgetItem(display_name)
             item.setData(Qt.ItemDataRole.UserRole, crop_dir)
@@ -354,6 +417,7 @@ class DatasetCurationTab(QWidget):
         search_path = os.path.join(self.current_dir, "*.jpg")
         self.image_files = sorted(glob.glob(search_path))
         self.lbl_info.setText(f"Found {len(self.image_files)} images.")
+        self._review_info = self._load_review_info()
 
         self.table_images.setRowCount(len(self.image_files))
 
@@ -409,9 +473,15 @@ class DatasetCurationTab(QWidget):
                 self.table_images.setItem(row, 4, NumericTableWidgetItem("Unknown"))
 
             self.table_images.setRowHeight(row, 100)
+            self._fill_review_columns(row, file_path)
 
         self.table_images.setSortingEnabled(True)
         self.table_images.sortItems(0, Qt.SortOrder.AscendingOrder)
+        rows = range(self.table_images.rowCount())
+        n_review = sum(1 for r in rows if self._row_status(r) == "needs review")
+        if n_review:
+            self.lbl_info.setText(f"Found {len(self.image_files)} images, {n_review} need review.")
+        self._apply_filter()
         self.update_ui_state()
 
     def on_image_selected(self):
@@ -429,6 +499,7 @@ class DatasetCurationTab(QWidget):
             parts = filename.replace(".jpg", "").split("_")
             if len(parts) >= 1:
                 self.edit_label.setText(parts[0])
+            self._show_preview(row, file_path)
 
         self.update_ui_state()
 
@@ -438,8 +509,6 @@ class DatasetCurationTab(QWidget):
         super().showEvent(event)
 
     def add_to_master_dataset(self):
-        import shutil
-
         selected_items = self.table_images.selectedItems()
         if not selected_items:
             return
@@ -452,6 +521,7 @@ class DatasetCurationTab(QWidget):
 
         added_count = 0
         skipped_count = 0
+        accepted_rows = []
         for row in selected_rows:
             screen_item = self.table_images.item(row, 4)
             icon_item = self.table_images.item(row, 5)
@@ -460,6 +530,7 @@ class DatasetCurationTab(QWidget):
 
             label = screen_item.text()
             if label == "Unknown" or not label:
+                self._log_decision(accepted_rows, "accepted")
                 QMessageBox.warning(
                     self,
                     "Label Required",
@@ -483,6 +554,7 @@ class DatasetCurationTab(QWidget):
             existing = glob.glob(os.path.join(master_dir, "*", f"*_{capture_id}"))
             if existing:
                 skipped_count += 1
+                accepted_rows.append(row)
                 # Visually indicate success since it's already safely in the dataset
                 for col in range(self.table_images.columnCount()):
                     item = self.table_images.item(row, col)
@@ -498,6 +570,13 @@ class DatasetCurationTab(QWidget):
 
             shutil.copy2(file_path, dest_path)
             added_count += 1
+            accepted_rows.append(row)
+            # Lossless native-resolution copy (if the session saved one) for LCD-Digit-CRNN v2
+            native = self._native_path(file_path)
+            if native:
+                native_dir = os.path.join(os.getcwd(), "Sessions", "Master_Dataset_native", label)
+                os.makedirs(native_dir, exist_ok=True)
+                shutil.copy2(native, os.path.join(native_dir, os.path.splitext(new_filename)[0] + ".png"))
 
             # Visually indicate success
             for col in range(self.table_images.columnCount()):
@@ -505,6 +584,8 @@ class DatasetCurationTab(QWidget):
                 if item:
                     item.setBackground(QColor("#27AE60"))
 
+        self._log_decision(accepted_rows, "accepted")
+        self._apply_filter()
         if added_count > 0 or skipped_count > 0:
             QMessageBox.information(
                 self,
@@ -558,6 +639,7 @@ class DatasetCurationTab(QWidget):
                     icon_item.setIcon(QIcon(new_path))
                     if val_item:
                         val_item.setText(new_val)
+                    self._style_row(row, self._compute_status(row))
                     if old_path in self.image_files:
                         idx = self.image_files.index(old_path)
                         self.image_files[idx] = new_path
@@ -679,7 +761,158 @@ class DatasetCurationTab(QWidget):
         self.btn_set_sync.setEnabled(has_selection)
         self.btn_save_label.setEnabled(has_selection)
         self.btn_master_dataset.setEnabled(has_selection)
+        self.btn_reject.setEnabled(has_selection)
         self.edit_label.setEnabled(has_selection)
+
+    # --- Review / QC ---------------------------------------------------------------------------
+    def _session_dir(self):
+        if not self.current_dir:
+            return None
+        d = os.path.abspath(self.current_dir)
+        return os.path.dirname(d) if os.path.basename(d) == "extracted_crops" else d
+
+    def _load_review_info(self):
+        """OCR reads, live-check flags and past decisions for this session, keyed by capture_key."""
+        info = {}
+        session = self._session_dir()
+        if not session:
+            return info
+
+        def rows(name):
+            try:
+                with open(os.path.join(session, name), newline="", encoding="utf-8") as f:
+                    return list(csv.DictReader(f))
+            except OSError:
+                return []
+
+        for r in rows("readings.csv"):  # serial-labelled crops (Auto-Record / Manual Snap)
+            if r.get("crop_file"):
+                info.setdefault(capture_key(r["crop_file"]), {})["ocr"] = r.get("ocr_value") or ""
+        for r in rows("review.csv"):  # snapshots of suspicious live OCR readings
+            if r.get("crop_file"):
+                d = info.setdefault(capture_key(r["crop_file"]), {})
+                d["ocr"] = r.get("ocr_display") or ""
+                d["flags"] = r.get("flags") or ""
+        for r in rows(CURATION_LOG):
+            if r.get("capture"):
+                info.setdefault(r["capture"], {})["decision"] = r.get("decision") or ""
+        return info
+
+    def _compute_status(self, row):
+        label_item = self.table_images.item(row, COL_LABEL)
+        label = label_item.text() if label_item else ""
+        thumb = self.table_images.item(row, COL_THUMB)
+        data = self._review_info.get(capture_key(thumb.data(Qt.ItemDataRole.UserRole)), {}) if thumb else {}
+        if data.get("decision"):
+            return data["decision"]
+        ocr = data.get("ocr", "")
+        if data.get("flags") or label in ("", "Unknown") or (ocr and not same_reading(ocr, label)):
+            return "needs review"
+        return ""
+
+    def _row_status(self, row):
+        item = self.table_images.item(row, COL_DECISION)
+        return (item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
+
+    def _fill_review_columns(self, row, file_path):
+        data = self._review_info.get(capture_key(file_path), {})
+        for col, text in ((COL_OCR, data.get("ocr", "")), (COL_FLAGS, data.get("flags", ""))):
+            item = QTableWidgetItem(text)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table_images.setItem(row, col, item)
+        self.table_images.setItem(row, COL_DECISION, QTableWidgetItem(""))
+        self._style_row(row, self._compute_status(row))
+
+    def _style_row(self, row, status):
+        item = self.table_images.item(row, COL_DECISION)
+        if item is None:
+            item = QTableWidgetItem("")
+            self.table_images.setItem(row, COL_DECISION, item)
+        item.setData(Qt.ItemDataRole.UserRole, status)
+        item.setText(status if status in ("accepted", "rejected") else ("⚠ review" if status else ""))
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        color = QColor(ROW_COLORS[status]) if status in ROW_COLORS else QColor(0, 0, 0, 0)
+        for col in range(self.table_images.columnCount()):
+            cell = self.table_images.item(row, col)
+            if cell:
+                cell.setBackground(color)
+
+    def _apply_filter(self, *_):
+        mode = self.combo_filter.currentIndex() if hasattr(self, "combo_filter") else 0
+        for row in range(self.table_images.rowCount()):
+            status = self._row_status(row)
+            decided = status in ("accepted", "rejected")
+            hide = (mode == 1 and status != "needs review") or (mode == 2 and decided)
+            self.table_images.setRowHidden(row, hide)
+
+    def _native_path(self, file_path):
+        session = self._session_dir()
+        if not session or not file_path:
+            return None
+        hits = glob.glob(os.path.join(session, "extracted_crops_native", f"*_{capture_key(file_path)}.png"))
+        return hits[0] if hits else None
+
+    def _log_decision(self, rows, decision):
+        session = self._session_dir()
+        if not rows or not session:
+            return
+        path = os.path.join(session, CURATION_LOG)
+        new_file = not os.path.exists(path)
+        with open(path, "a", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=CURATION_LOG_HEADER)
+            if new_file:
+                w.writeheader()
+            for row in rows:
+                thumb = self.table_images.item(row, COL_THUMB)
+                if not thumb:
+                    continue
+                file_path = thumb.data(Qt.ItemDataRole.UserRole)
+                key = capture_key(file_path)
+
+                def text(col, row=row):
+                    item = self.table_images.item(row, col)
+                    return item.text() if item else ""
+
+                w.writerow(
+                    {
+                        "time": datetime.now().isoformat(timespec="seconds"),
+                        "capture": key,
+                        "decision": decision,
+                        "label": text(COL_LABEL),
+                        "ocr_read": text(COL_OCR),
+                        "flags": text(COL_FLAGS),
+                        "file": os.path.basename(file_path),
+                    }
+                )
+                self._review_info.setdefault(key, {})["decision"] = decision
+                self._style_row(row, decision)
+
+    def reject_selected(self):
+        rows = sorted({item.row() for item in self.table_images.selectedItems()})
+        self._log_decision(rows, "rejected")
+        self._apply_filter()
+
+    def _show_preview(self, row, file_path):
+        path = self._native_path(file_path) or file_path
+        pix = QPixmap(path)
+        if pix.isNull():
+            self.lbl_preview.setText("Could not load the image.")
+        else:
+            width = max(200, self.lbl_preview.width() - 10)
+            self.lbl_preview.setPixmap(pix.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation))
+
+        def text(col):
+            item = self.table_images.item(row, col)
+            return item.text() if item else ""
+
+        parts = [f"<b>Label:</b> {text(COL_LABEL) or '-'}", f"<b>OCR read:</b> {text(COL_OCR) or '-'}"]
+        if text(COL_FLAGS):
+            parts.append(f"<b>Flags:</b> {text(COL_FLAGS)}")
+        status = self._row_status(row)
+        if status:
+            parts.append(f"<b>Status:</b> {status}")
+        source = "native resolution" if path != file_path else "128×128 training crop"
+        self.lbl_preview_info.setText(" · ".join(parts) + f"<br><i>{source}: {os.path.basename(path)}</i>")
 
     def delete_lag_entry(self, meter_id):
         lst = self.list_m1_lag if meter_id == 1 else self.list_m2_lag

@@ -98,7 +98,7 @@ The app opens without a meter attached, so you can look around first. Plug a met
 | Left panel | Axis limits, graph units, time vs. duration axis, event log |
 | **Settings** tab | Save folder and file-name template for both meters, Discord alerts, settings folder, version, **Create Desktop Shortcut** and **Check for Updates** |
 | **Live OCR Feed** tab | Camera on/off, draw the reading area, OCR filters and logging |
-| **Dataset Curation** tab | Review and label camera crops for retraining the OCR model |
+| **Dataset Curation** tab | Review and label camera crops for retraining the OCR model: compare what the OCR read with the meter's value, check crops flagged by the live OCR check, and accept or reject each one |
 
 ## Where files go
 

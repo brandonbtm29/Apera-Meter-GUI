@@ -55,6 +55,7 @@ only-include = [
     "ocr_pipeline.py",
     "ocr_model.py",
     "dataset_curation_tab.py",
+    "ocr_review.py",
     "settings_location.py",
     "crash_log.py",
     "shortcuts.py",

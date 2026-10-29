@@ -11,6 +11,22 @@ bump the first. The format is based on [Keep a Changelog](https://keepachangelog
   the data folder. An unexpected error is shown in a dialog and the app keeps running instead of closing.
 - `Setup_Windows.bat` / `Setup_Mac.command`: one double-click creates the `.venv` and installs everything
   (asks whether to add the camera OCR).
+- **Auto-Record OCR Training Dataset** now records what the meter itself reported for every saved crop:
+  `readings.csv` gains the displayed digits, the unit (µS/cm or mS/cm), the meter's own clock time, the
+  previous reading (to tell a steady display from one that was changing) and the live OCR result. A
+  lossless copy of each crop at the camera's resolution goes to `extracted_crops_native/`. The first
+  five columns of `readings.csv` are unchanged.
+- **Live OCR check** (while Auto-Record is on): OCR readings that look wrong get a camera snapshot in
+  the dataset session, with the reason in `review.csv`. A reading is flagged if it is about 10×, 100× or
+  1000× off the recent readings, jumps by more than 25 %, disagrees with a meter reading from the last
+  5 s, reads nothing, or has confidence below 90 %. At most one snapshot every 15 s per meter.
+- **Dataset Curation** review tools:
+  - an "OCR Read" column, with crops highlighted when the OCR disagrees with the label, the live check
+    flagged them, or they have no label yet
+  - a "Needs review" filter and a large preview (full resolution when available)
+  - a **Reject** button; accept and reject decisions are saved in `curation_log.csv` and survive
+    reopening the session
+  - accepted crops are also copied at full resolution to `Sessions/Master_Dataset_native/`
 
 ## [1.3.0] - 2026-10-15
 

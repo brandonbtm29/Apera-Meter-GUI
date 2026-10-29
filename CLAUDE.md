@@ -17,7 +17,8 @@ Dual-meter PyQt6 app for Apera EC400S / EC8500 conductivity meters (serial auto-
 - `meter_app.py` (~3,700 lines; `main()`/`create_app()` at the bottom): `MeterController` (per-meter tab and serial), `SettingsTab`, `OCRFeedTab` (camera + ROI via `InteractiveImageLabel`, ROIs saved in `global_rois.json` in the data folder), `MeterApp` (main window).
 - `ocr_model.py`: `MeterCRNN`, the deployed model definition. A copy lives in `LCD-Digit-CRNN`; keep the two in sync if the architecture changes.
 - `ocr_pipeline.py`: preprocessing and inference; loads `meter_ocr_model.pt` from this folder via `__file__`.
-- `dataset_curation_tab.py`: labelling UI; writes crops to `Sessions/Master_Dataset/` in the data folder (the training set for LCD-Digit-CRNN).
+- `dataset_curation_tab.py`: labelling and review UI; writes accepted crops to `Sessions/Master_Dataset/` (128×128, the v1 training set for LCD-Digit-CRNN) and `Sessions/Master_Dataset_native/` (full resolution). It shows the OCR read next to the label, highlights crops that need review, and logs accept/reject decisions in each session's `curation_log.csv`, keyed by `ocr_review.capture_key` so relabelling keeps the history.
+- `ocr_review.py`: the live OCR check (no Qt). While Auto-Record is on, `MeterApp._review_ocr_reading` snapshots suspicious logged OCR readings into the session's `review.csv` + crops, rate-limited.
 - `shortcuts.py`: Settings → Create Desktop Shortcut (Windows .lnk via PowerShell/WScript.Shell, macOS .app via osacompile + sips/iconutil icon, Linux .desktop; no Qt). An existing shortcut is refreshed at start (`_start_background_checks`).
 - `updater.py`: GitHub release check and git-clone update behind Settings → Check for Updates (no Qt; tested in `tests/test_updater.py`).
 - `Scripts/`: `build_app.py`, `cleanup_1000x_gaps.py`, `make_screenshot.py` (renders `docs/screenshot.png` with fake data), `preview.py`, `test.py` (app helpers only).
@@ -28,7 +29,9 @@ Dual-meter PyQt6 app for Apera EC400S / EC8500 conductivity meters (serial auto-
 - Apera's PC Link software, drivers and the EC400S manual are in SyncThing: `Electrical Conductivity Meter/Reference/Vendor Software/`. Don't commit vendor binaries, manuals, data or credentials here.
 
 ## OCR research
-Training, the DoE sweeps, the adversarial benchmark and error profiling moved to the private repo `brandonbtm29/LCD-Digit-CRNN` (`../LCD-Digit-CRNN`) on 10 Oct 2026, with their file history. Read its `CLAUDE.md` for research status. To deploy a new model, copy the trained checkpoint over `meter_ocr_model.pt` here (Git LFS) and commit it.
+Training, the DoE sweeps, the synthetic corruption benchmark (its folder is still named `Adversarial_Benchmark`; it is not adversarial examples) and error profiling moved to the private repo `brandonbtm29/LCD-Digit-CRNN` (`../LCD-Digit-CRNN`) on 10 Oct 2026, with their file history. Read its `CLAUDE.md` for research status. To deploy a new model, copy the trained checkpoint over `meter_ocr_model.pt` here (Git LFS) and commit it. The current `meter_ocr_model.pt` is byte-identical to LCD-Digit-CRNN's `Phase2_R34_Ep75_Unf0_Drop10.pt` (ResNet-34, BiLSTM, 8 CTC time steps, backbone unfrozen from the start).
+
+**Auto-Record OCR Training Dataset** (Live OCR Feed tab) is the labelled-data source for LCD-Digit-CRNN's methodology v2 (`docs/METHODOLOGY_V2.md` there): on every serial reading it saves the frame, a 128×128 crop (`extracted_crops/`, the v1 training format), a lossless native-resolution crop (`extracted_crops_native/`) and a `readings.csv` row whose columns are documented at `DATASET_CSV_HEADER` in `meter_app.py`. Keep those columns backward compatible (append only).
 
 ## Where code and data live
 - **Code** (this repo) is cloned outside SyncThing, e.g. `~/GitHub Projects/UAkron/Apera-Meter-GUI`. It syncs through GitHub only.
