@@ -3036,6 +3036,7 @@ class MeterApp(QMainWindow):
         from ocr_pipeline import MeterOCR
 
         self.ocr_pipeline = MeterOCR()
+        self._apply_ocr_settings()  # the saved threshold and smoothing, before the first reading
 
         self.ocr_readings_signal.connect(self.on_ocr_readings)
         self.ocr_pipeline.add_callback(lambda readings: self.ocr_readings_signal.emit(readings))
@@ -3514,6 +3515,17 @@ class MeterApp(QMainWindow):
             self._latest_camera_frame = None
             self.ocr_feed_tab.receive_frame_threadsafe(frame, rois)
 
+    def _apply_ocr_settings(self):
+        """Give the OCR pipeline the settings it reads itself (confidence threshold, smoothing).
+
+        Called when the pipeline is created and whenever an OCR setting changes; call it again
+        anywhere a new pipeline is made.
+        """
+        if getattr(self, "ocr_pipeline", None) is None:
+            return
+        self.ocr_pipeline.use_midpoint_filter = self.ocr_midpoint_chk.isChecked()
+        self.ocr_pipeline.min_confidence = self.ocr_conf_spin.value()
+
     def _save_ocr_config(self):
         import json
 
@@ -3532,9 +3544,7 @@ class MeterApp(QMainWindow):
         self.shared_config["ocr_phys_max_chk"] = self.ocr_phys_max_chk.isChecked()
         self.shared_config["ocr_phys_max_spin"] = self.ocr_phys_max_spin.value()
 
-        if hasattr(self, "ocr_pipeline") and self.ocr_pipeline is not None:
-            self.ocr_pipeline.use_midpoint_filter = self.ocr_midpoint_chk.isChecked()
-            self.ocr_pipeline.min_confidence = self.ocr_conf_spin.value()
+        self._apply_ocr_settings()
         try:
             with open(self.config_path, "w") as f:
                 json.dump(self.shared_config, f, indent=4)
@@ -3818,11 +3828,12 @@ class MeterApp(QMainWindow):
         now = datetime.datetime.now()
         dt_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
+        # One confidence threshold (OCR settings) for both meters. Read it before either meter's
+        # branch so Meter 2 still has it when Meter 1 sent no reading.
+        min_conf = getattr(self.ocr_pipeline, "min_confidence", 0.0) if hasattr(self, "ocr_pipeline") else 0.0
+
         if len(readings) > 0 and readings[0] is not None:
             c1_cnn, c1_cv, c1_conf = readings[0]
-            min_conf = (
-                getattr(self.ocr_pipeline, "min_confidence", 0.0) if hasattr(self, "ocr_pipeline") else 0.0
-            )
             rejected = False
             if min_conf > 0.0 and c1_conf < min_conf:
                 c1_cnn = 0.0

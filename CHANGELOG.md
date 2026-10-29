@@ -6,6 +6,11 @@ bump the first. The format is based on [Keep a Changelog](https://keepachangelog
 
 ## [Unreleased]
 
+### Fixed
+- Camera OCR: Meter 2's camera reading no longer depends on a Meter 1 reading being present.
+- Camera OCR: the saved confidence threshold and smoothing setting now apply as soon as the app
+  starts, not only after changing one of them.
+
 ## [1.4.0] - 2026-10-28
 
 ### Added
