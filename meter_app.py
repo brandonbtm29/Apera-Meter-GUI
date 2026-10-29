@@ -3802,20 +3802,18 @@ class MeterApp(QMainWindow):
                 cv_raw = _get_best_permutation(val_cv, False)
                 result = cnn_raw if cnn_raw != 0.0 else cv_raw
             else:
-                result = cnn_raw if cnn_raw != 0.0 else None
+                result = cnn_raw
         else:
-            result = final_val if final_val != 0.0 else None
+            result = final_val
 
-        if (
-            result is not None
-            and getattr(self, "ocr_phys_max_chk", None)
-            and self.ocr_phys_max_chk.isChecked()
-        ):
+        if result and getattr(self, "ocr_phys_max_chk", None) and self.ocr_phys_max_chk.isChecked():
             limit_spin = getattr(self, "ocr_phys_max_spin", None)
             if limit_spin and result > limit_spin.value():
-                return None
+                return 0.0
 
-        return result
+        # No usable reading (display unreadable, below the confidence threshold or filtered out):
+        # 0.0, in every OCR mode, so the gap shows up in the log while recording.
+        return result or 0.0
 
     def on_ocr_readings(self, readings):
         import time
@@ -3844,19 +3842,16 @@ class MeterApp(QMainWindow):
                 last_ms = getattr(self.meter1, "last_serial_cond_ms", 0.0)
                 if last_ms == 0.0:
                     last_ms = getattr(self.meter1, "last_ocr_cond_ms", 0.0)
-                c1 = self._apply_ocr_consensus(c1_cnn, c1_cv, last_ms)
-                if c1 is not None and c1 != 0.0:
+                c1 = self._apply_ocr_consensus(c1_cnn, c1_cv, last_ms)  # 0.0 = no usable reading
+                if c1 != 0.0:
                     self.meter1.last_ocr_cond_ms = c1
-                if c1 is not None:
-                    row_data1 = (dt_str, "OCR", f"{c1 * 1000:.1f}", f"{c1:.3f}", "-", f"{c1_conf * 100:.1f}")
-                    if (
-                        self.meter1.is_recording
-                        and getattr(self, "ocr_autolog_checkbox", None)
-                        and self.ocr_autolog_checkbox.isChecked()
-                    ):
-                        self.meter1.signals.update_tree.emit(now, row_data1)
-                elif rejected:
-                    pass
+                row_data1 = (dt_str, "OCR", f"{c1 * 1000:.1f}", f"{c1:.3f}", "-", f"{c1_conf * 100:.1f}")
+                if (
+                    self.meter1.is_recording
+                    and getattr(self, "ocr_autolog_checkbox", None)
+                    and self.ocr_autolog_checkbox.isChecked()
+                ):
+                    self.meter1.signals.update_tree.emit(now, row_data1)
 
             # Update status bar indicator for Meter 1
             if hasattr(self, "lbl_ocr_status"):
@@ -3881,17 +3876,16 @@ class MeterApp(QMainWindow):
                 last_ms = getattr(self.meter2, "last_serial_cond_ms", 0.0)
                 if last_ms == 0.0:
                     last_ms = getattr(self.meter2, "last_ocr_cond_ms", 0.0)
-                c2 = self._apply_ocr_consensus(c2_cnn, c2_cv, last_ms)
-                if c2 is not None and c2 != 0.0:
+                c2 = self._apply_ocr_consensus(c2_cnn, c2_cv, last_ms)  # 0.0 = no usable reading
+                if c2 != 0.0:
                     self.meter2.last_ocr_cond_ms = c2
-                if c2 is not None:
-                    row_data2 = (dt_str, "OCR", f"{c2 * 1000:.1f}", f"{c2:.3f}", "-", f"{c2_conf * 100:.1f}")
-                    if (
-                        self.meter2.is_recording
-                        and getattr(self, "ocr_autolog_checkbox", None)
-                        and self.ocr_autolog_checkbox.isChecked()
-                    ):
-                        self.meter2.signals.update_tree.emit(now, row_data2)
+                row_data2 = (dt_str, "OCR", f"{c2 * 1000:.1f}", f"{c2:.3f}", "-", f"{c2_conf * 100:.1f}")
+                if (
+                    self.meter2.is_recording
+                    and getattr(self, "ocr_autolog_checkbox", None)
+                    and self.ocr_autolog_checkbox.isChecked()
+                ):
+                    self.meter2.signals.update_tree.emit(now, row_data2)
 
     def get_used_ports(self):
         used = []
