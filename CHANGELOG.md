@@ -6,6 +6,13 @@ bump the first. The format is based on [Keep a Changelog](https://keepachangelog
 
 ## [Unreleased]
 
+### Fixed
+- Camera OCR: while a meter is recording, a display the OCR can't read (or a reading it turns down) is
+  logged as 0.0 in every OCR mode, so the gap shows in the data. Before, only the default Dual-Mode
+  setting did this; with Dual-Mode off, with **Discard Bad Reads (Return 0.0)** on, or for a reading
+  above **Enforce Absolute Max**, that second was skipped with no row. A 0.0 is never used as the last
+  good reading.
+
 ## [1.4.1] - 2026-10-29
 
 ### Fixed
