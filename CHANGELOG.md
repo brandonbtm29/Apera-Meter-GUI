@@ -6,6 +6,8 @@ bump the first. The format is based on [Keep a Changelog](https://keepachangelog
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-10-29
+
 ### Fixed
 - Camera OCR: Meter 2's camera reading no longer depends on a Meter 1 reading being present.
 - Camera OCR: the saved confidence threshold and smoothing setting now apply as soon as the app
@@ -131,7 +133,8 @@ with Claude (Anthropic).
 - Personal email addresses, home-folder paths and machine names were removed from the files and
   the git history. Commit IDs before this release changed as a result.
 
-[Unreleased]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/brandonbtm29/Apera-Meter-GUI/compare/v1.1.0...v1.2.0

@@ -1,7 +1,7 @@
 import sys
 import os
 
-__version__ = "1.4.0"  # single source of truth; read by pyproject.toml
+__version__ = "1.4.1"  # single source of truth; read by pyproject.toml
 
 # --- Code vs data -----------------------------------------------------------
 # Data (exports, backups, logs) lives outside the code. The app runs with the data
