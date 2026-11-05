@@ -20,3 +20,16 @@ os.environ["APERA_NO_BACKGROUND_CHECKS"] = "1"  # no network calls or desktop ch
 
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
+
+
+import pytest  # noqa: E402 - after the environment is set up
+
+
+@pytest.fixture(autouse=True)
+def _app_test_defaults(monkeypatch, tmp_path):
+    """Closing a window with unsaved readings asks Save / Close / Cancel: tests always close. And
+    this computer's state (COM ports, window layout) goes to a temp file, not the repo folder."""
+    import meter_app
+
+    monkeypatch.setattr(meter_app.MeterApp, "_close_choice", lambda self, lines: "close")
+    monkeypatch.setattr(meter_app, "LOCAL_STATE_PATH", str(tmp_path / "local_state.json"))

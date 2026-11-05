@@ -52,6 +52,9 @@ path = "meter_app.py"
 [tool.hatch.build.targets.wheel]
 only-include = [
     "meter_app.py",
+    "meter_protocol.py",
+    "recording.py",
+    "plot_math.py",
     "ocr_pipeline.py",
     "ocr_model.py",
     "dataset_curation_tab.py",
