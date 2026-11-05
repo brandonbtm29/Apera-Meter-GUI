@@ -3449,7 +3449,8 @@ class MeterApp(QMainWindow):
         self.tabs.addTab(self.ocr_feed_tab, "Live OCR Feed")
         self.tabs.addTab(self.dataset_curation_tab, "Dataset Curation")
 
-        if self.ocr_autostart_chk.isChecked():
+        # APERA_NO_CAMERA_AUTOSTART=1 (set by the tests): don't open a real webcam a few seconds in
+        if self.ocr_autostart_chk.isChecked() and os.environ.get("APERA_NO_CAMERA_AUTOSTART") != "1":
             QTimer.singleShot(2500, lambda: self.ocr_checkbox.setChecked(True))
 
         self._restore_layout()

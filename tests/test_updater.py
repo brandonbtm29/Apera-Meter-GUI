@@ -52,7 +52,10 @@ def test_fetch_latest_release_explains_failures():
 
 
 def git(cwd, *args):
-    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+    # Ignore the user's own signing settings: with tag.gpgSign on, "git tag" would open an editor
+    # for a tag message and the test would hang.
+    cmd = ["git", "-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false", *args]
+    return subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
 
 @pytest.fixture
