@@ -117,6 +117,7 @@ def test_second_copy_brings_first_forward(qapp, name):
     finally:
         holder.kill()
         holder.wait()
+        holder.stdout.close()
     # the first copy has quit (and given its lock back), so now this one can run
     assert not os.path.exists(lock_path(name))
     assert single_instance.acquire(name) is not None

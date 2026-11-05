@@ -1,7 +1,7 @@
 import sys
 import os
 
-__version__ = "1.4.2"  # single source of truth; read by pyproject.toml
+__version__ = "1.5.0"  # single source of truth; read by pyproject.toml
 
 # Columns of Sessions/dataset_session_*/readings.csv (Auto-Record OCR Training Dataset / Manual Snap).
 # The first five are the original format ("screen_val" holds the reading in mS/cm). The rest label each
@@ -56,11 +56,23 @@ import crash_log
 import diagnostics
 import single_instance
 
+import meter_protocol
+import plot_math
+import recording
+
 APP_NAME = "Apera Meter GUI"
 APP_DIR = settings_location.app_folder(script_dir)
 CONFIG_DIR = settings_location.resolve(APP_DIR, DATA_DIR)
 SETTINGS_FILES = ["config.json", "global_rois.json"]
+# Each computer keeps its own logs and backups inside the shared (SyncThing) data folder, and its
+# own COM ports and window layout in the app folder (local_state.json, gitignored, never synced).
+COMPUTER = recording.computer_folder_name()
+LOG_DIR = os.path.join(DATA_DIR, "logs", COMPUTER)
+LOCAL_STATE_PATH = os.path.join(APP_DIR, "local_state.json")
+AUTO_DETECT = "Auto-Detect Apera Meter"
 
+import bisect
+import logging
 import serial
 import serial.tools.list_ports
 import threading
@@ -68,14 +80,9 @@ import time
 import math
 import requests
 import datetime
-import csv
 import json
-import openpyxl
-from openpyxl.styles import Font, Alignment
-import pandas as pd
-import serial
-import serial.tools.list_ports
-import struct
+
+log = logging.getLogger("apera_meter")
 
 # Import torch/ocr before QApplication is created to prevent OpenMP/MKL deadlocks on Windows
 try:
@@ -142,10 +149,25 @@ class NumericTableWidgetItem(QTableWidgetItem):
 
 
 class WorkerSignals(QObject):
+    """Signals the serial threads use to hand work to the GUI thread."""
+
     update_tree = pyqtSignal(object, tuple)
     update_status = pyqtSignal(str, str)
     update_device_info = pyqtSignal(str, str)
     reset_manual_snap = pyqtSignal()
+    meter_confirmed = pyqtSignal(int)  # connection number: the meter answered
+    connection_lost = pyqtSignal(int, str)  # connection number, reason
+    memory_reading = pyqtSignal(object)  # a meter_protocol.Reading from Download Raw Memory
+    notice = pyqtSignal(str)  # a message for the event log (e.g. the meter's clock is off)
+    burst_started = pyqtSignal()
+    save_finished = pyqtSignal(str, str, int)  # path written, error ("" if none), rows saved
+    scan_finished = pyqtSignal(int, str)  # auto-detect scan number, port found ("" if none)
+
+
+# Seconds between reconnect attempts after the USB connection drops (the last one repeats).
+RECONNECT_DELAYS_S = (2, 5, 10, 20, 30, 60)
+CONFIRM_TIMEOUT_MS = 6000  # a port that sends nothing an Apera meter would send in this time is let go
+CLOCK_WARN_S = 60  # warn when the meter's clock is further off than this
 
 
 class CollapsibleBox(QWidget):
@@ -193,17 +215,38 @@ class MeterController(QWidget):
         self.is_connected = False
         self.unsaved_changes = False
         self.is_recording = False
-        self.received_timestamps = set()
+        self.recent_meter_times = {}  # meter clock text -> PC time first seen (drops repeated packets)
         self.baseline_log_cond = None
         self.last_alert_time = 0
         self.alert_start_time = None
 
-        self.plot_dates = []
-        self.plot_conds = []
+        self.records = []  # every logged row (the COLUMNS of recording.py), in arrival order
+        self.plot_dates = []  # kept sorted by time
+        self.plot_daynums = []  # the same times as matplotlib date numbers (for drawing)
+        self.plot_conds = []  # mS/cm
         self.plot_temps = []
+        self.backup_dir = os.path.join(os.getcwd(), "Data Backups")
+        self.backup_path = None  # this session's backup CSV, created with its first reading
+        self.autosave_path = None  # this session's auto-save / Quick Save file, fixed at its first save
+        self._save_thread = None
 
         self.last_auto_dump_time = time.time()
-        self.last_data_time = 0
+        self.last_data_time = 0  # PC time of the last data packet (keep-alive, stall alert)
+        self._last_autosave = time.monotonic()
+
+        # Connection state. Each connection gets a number, so threads of an earlier one stop.
+        self._conn_gen = 0
+        self._confirmed = False  # the port answered like an Apera meter
+        self._user_disconnected = True
+        self._reconnect_port = None
+        self._reconnect_attempt = 0
+        self._was_recording_when_lost = False
+        self._stall_alerted = False
+        self._clock_checked = False
+        self._last_mode_notice = None
+        self._memory = None  # readings of a running memory download, else None
+        self._memory_auto = False
+        self._last_memory_signature = None
 
         # Signals for thread-safe UI updates
         self.signals = WorkerSignals()
@@ -211,24 +254,21 @@ class MeterController(QWidget):
         self.signals.update_status.connect(self.set_status)
         self.signals.update_device_info.connect(self.set_device_info)
         self.signals.reset_manual_snap.connect(self._reset_manual_snap_ui)
+        self.signals.meter_confirmed.connect(self._on_meter_confirmed)
+        self.signals.connection_lost.connect(self._on_connection_lost)
+        self.signals.memory_reading.connect(self._on_memory_reading)
+        self.signals.notice.connect(self.log_event)
+        self.signals.burst_started.connect(self._on_burst_started)
+        self.signals.save_finished.connect(self._on_save_finished)
+        self.signals.scan_finished.connect(self._on_scan_finished)
 
         self.config_path = os.path.join(CONFIG_DIR, "config.json")
-
-        if self.app_controller and not hasattr(self.app_controller, "shared_config"):
-            self.app_controller.shared_config = {}
-            if os.path.exists(self.config_path):
-                try:
-                    with open(self.config_path) as f:
-                        self.app_controller.shared_config = json.load(f)
-                except Exception:
-                    pass
-
+        if self.app_controller is not None and not hasattr(self.app_controller, "shared_config"):
+            self.app_controller.shared_config, _ = recording.load_json(self.config_path)
         self.config = self.app_controller.shared_config if self.app_controller else {}
 
-        # Set defaults
-        self.config.setdefault(
-            f"default_com_port_{meter_id}", "COM4" if meter_id == 1 else "Auto-Detect Apera Meter"
-        )
+        # Set defaults. The COM port is chosen per computer (local_state.json), see below.
+        self.config.setdefault(f"default_com_port_{meter_id}", AUTO_DETECT)
         self.config.setdefault(f"default_auto_dump_hrs_{meter_id}", 2.0)
         self.config.setdefault(f"default_save_location_{meter_id}", "")
         self.config.setdefault(f"meter_notes_{meter_id}", "")
@@ -241,31 +281,58 @@ class MeterController(QWidget):
         self.config.setdefault(f"autosave_min_{meter_id}", "5.0")
         self.config.setdefault(f"save_template_{meter_id}", f"Meter_<{meter_id}>_<Date>")
 
-        self.columns = (
-            "DateTime",
-            "Duration (min)",
-            "Mode",
-            "Cond (uS/cm)",
-            "Cond (mS/cm)",
-            "Temp (°C)",
-            "OCR Conf (%)",
-        )
-        self.setup_backup_path()
+        self.columns = recording.COLUMNS
         self.init_ui()
 
+        # Auto-save, auto-stop, the no-readings alert and the memory auto-dump run on their own
+        # timer, so they keep working when readings stop.
+        self.housekeeping_timer = QTimer(self)
+        self.housekeeping_timer.timeout.connect(self._housekeeping)
+        self.housekeeping_timer.start(5000)
+        self.memory_timer = QTimer(self)
+        self.memory_timer.timeout.connect(self._check_memory_download)
+
         self.refresh_ports()
-        target_com = self.config.get(f"default_com_port_{self.meter_id}", "Auto-Detect Apera Meter")
-        idx = self.port_combo.findText(target_com)
+        here = self._local_port()
+        shared = self.config.get(f"default_com_port_{self.meter_id}")
+        available = [self.port_combo.itemText(i) for i in range(self.port_combo.count())]
+        target_com = recording.pick_port(here, shared if shared != AUTO_DETECT else None, available)
+        idx = self.port_combo.findText(target_com or AUTO_DETECT)
         if idx >= 0:
             self.port_combo.setCurrentIndex(idx)
 
-        if target_com != "Auto-Detect Apera Meter":
-            # Wait 2 seconds before connecting to avoid COM port locks
+        # Connect at start only to a port where this computer has already found the meter. A port
+        # from the shared settings (perhaps saved on another computer, or the old COM4 default) is
+        # only preselected: it could be another instrument's port.
+        if here and target_com == here:
             QTimer.singleShot(2000, self.auto_connect_if_valid)
+        elif here:
+            self.log_event(
+                f"The meter's port on this computer ({here}) isn't connected. Plug it in and click Connect."
+            )
+        elif target_com:
+            self.log_event(
+                f"{target_com} is preselected from the saved settings. Click Connect: once the meter "
+                "answers there, this computer remembers the port and connects at start."
+            )
+
+    def _local_port(self):
+        state = getattr(self.app_controller, "local_state", None) or {}
+        return state.get("ports", {}).get(str(self.meter_id))
+
+    def _remember_port(self, port):
+        """Remember the port for this computer only (it's where the meter answered)."""
+        app = self.app_controller
+        if app is None or not hasattr(app, "local_state"):
+            return
+        ports = app.local_state.setdefault("ports", {})
+        if ports.get(str(self.meter_id)) != port:
+            ports[str(self.meter_id)] = port
+            app.save_local_state()
 
     def auto_connect_if_valid(self):
-        if not hasattr(self, "serial_worker") or not self.serial_worker:
-            self.toggle_connection()
+        if not self.is_connected and not getattr(self, "is_scanning", False):
+            self.connect_meter()
 
     def log_event(self, msg):
         import datetime
@@ -636,12 +703,16 @@ class MeterController(QWidget):
         # We handle loading during initialization in the shared config logic now.
         pass
 
-    def save_config(self):
+    def save_config(self, now=False):
+        """Save the shared settings (shortly after the last change, or at once with now=True)."""
+        app = self.app_controller
+        if app is not None and hasattr(app, "save_shared_config"):
+            app.save_shared_config(now=now)
+            return
         try:
-            with open(self.config_path, "w") as f:
-                json.dump(self.config, f, indent=4)
-        except Exception:
-            pass
+            recording.write_json_atomic(self.config_path, self.config)
+        except OSError:
+            log.exception("Couldn't save the settings to %s", self.config_path)
 
     def save_notes(self):
         self.config[f"meter_notes_{self.meter_id}"] = self.txt_notes.toPlainText().strip()
@@ -649,12 +720,16 @@ class MeterController(QWidget):
 
     def get_ports(self):
         ports = serial.tools.list_ports.comports()
-        return ["Auto-Detect Apera Meter"] + [p.device for p in ports]
+        return [AUTO_DETECT] + [p.device for p in ports]
 
     def refresh_ports(self, checked=False):
+        current = self.port_combo.currentText()
         ports = self.get_ports()
         self.port_combo.clear()
         self.port_combo.addItems(ports)
+        idx = self.port_combo.findText(current)
+        if idx >= 0:
+            self.port_combo.setCurrentIndex(idx)
 
     def _save_autosave_config(self):
         self.config[f"autosave_mode_{self.meter_id}"] = self.combo_autosave.currentText()
@@ -863,8 +938,11 @@ class MeterController(QWidget):
 
         if not self.is_recording:
             self.is_recording = True
-            self.session_start_time = None
-            self.last_autosave_min = 0.0
+            if not self.records:
+                self.session_start_time = None  # a new session starts with its first reading
+            # (Resuming after Pause keeps the session's start, so durations carry on.)
+            self._last_autosave = time.monotonic()
+            self._stall_alerted = False
             self.btn_record.setText("⏸ Pause Recording")
             self.btn_record.setStyleSheet("background-color: #e74c3c; color: white;")
             self.set_status("Recording...", "gray")
@@ -879,9 +957,8 @@ class MeterController(QWidget):
             self.set_status("Paused", "gray")
             self.log_event("⏸ Recording Session Paused.")
 
-            if self.combo_autosave.currentText() == "Every X Minutes":
+            if self.combo_autosave.currentText() == "Every X Minutes" and self.unsaved_changes:
                 self.save_excel(auto=True, is_background_autosave=True)
-                self.log_event("[Auto-Save] Data saved to directory automatically upon pause.")
             self.ax.set_title(f"Live (Not Recording): Conductivity (Meter {self.meter_id})")
         self.canvas.draw_idle()
 
@@ -979,73 +1056,40 @@ class MeterController(QWidget):
             self.btn_recover.setText("♻️ Recover Session")
             self.btn_clear.setText("🗑️ Clear Data")
 
-    def clear_log(self, init_file=False):
+    def clear_log(self, checked=False, ask=True):
+        """Clear Data: empty the table and graph and start a new session (new backup and auto-save
+        file). Asks first when there are readings that aren't saved to Excel."""
+        if ask and self.unsaved_changes and self.records:
+            reply = QMessageBox.question(
+                self,
+                "Clear Data",
+                f"Meter {self.meter_id} has {len(self.records)} readings that aren't saved to Excel "
+                "(Recover Session can still bring them back from the backup).\n\nClear them?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
         self.table.setRowCount(0)
-        self.last_auto_filepath = None
-        self.received_timestamps.clear()
+        self.records.clear()
+        self.recent_meter_times.clear()
         self.plot_dates.clear()
+        self.plot_daynums.clear()
         self.plot_conds.clear()
         self.plot_temps.clear()
         self.session_start_time = None
+        self.backup_path = None  # the next reading starts a new backup file
+        self.autosave_path = None  # ... and a new auto-save file
+        self.unsaved_changes = False
         self.last_auto_dump_time = time.time()
         self.plot_data()
 
-    def setup_backup_path(self):
-        backup_dir = os.path.join(os.getcwd(), "Data Backups")
-        os.makedirs(backup_dir, exist_ok=True)
-        self.backup_path = os.path.join(backup_dir, f"Apera_Meter{self.meter_id}_Backup.csv")
-
     def scan_backup_sessions(self, gap_minutes=30.0):
-        if not os.path.exists(self.backup_path):
-            return []
-        sessions = []
-        try:
-            with open(self.backup_path, newline="", encoding="utf-8") as f:
-                reader = csv.reader(f)
-                next(reader, None)  # skip the header row
-                rows = list(reader)
-
-            current_session = None
-            last_ts_obj = None
-            import datetime
-
-            for idx, row in enumerate(rows):
-                if len(row) >= 6:
-                    try:
-                        ts_str = row[0]
-                        ts_obj = datetime.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-
-                        is_new_session = False
-                        if current_session is None:
-                            is_new_session = True
-                        elif last_ts_obj is not None:
-                            diff_min = (ts_obj - last_ts_obj).total_seconds() / 60.0
-                            if diff_min >= gap_minutes:
-                                is_new_session = True
-
-                        if is_new_session:
-                            if current_session:
-                                current_session["end_idx"] = idx - 1
-                                sessions.append(current_session)
-                            current_session = {
-                                "start_idx": idx,
-                                "start_ts": ts_str,
-                                "end_ts": ts_str,
-                                "points": 0,
-                            }
-
-                        current_session["end_ts"] = ts_str
-                        current_session["points"] += 1
-                        last_ts_obj = ts_obj
-                    except Exception:
-                        pass
-
-            if current_session:
-                current_session["end_idx"] = len(rows) - 1
-                sessions.append(current_session)
-        except Exception:
-            pass
-        return sessions
+        """Recording sessions found in the backups (this computer's, other computers' and the old
+        single file), oldest first."""
+        paths = recording.backup_files(self.backup_dir, self.meter_id)
+        if self.backup_path and os.path.exists(self.backup_path) and self.backup_path not in paths:
+            paths.append(self.backup_path)
+        return recording.scan_sessions(paths, gap_minutes, computer=COMPUTER)
 
     def prompt_session_recovery(self, checked=False):
         dialog = QDialog(self)
@@ -1115,7 +1159,12 @@ class MeterController(QWidget):
             btn_delete.setEnabled(True)
 
             for i, s in enumerate(sessions):
-                rb = QRadioButton(f"Session {i + 1} | {s['start_ts']} -> {s['end_ts']} | {s['points']} pts")
+                where = ""
+                if not s.get("this_computer"):
+                    where = f" | from {s['computer']}" if s.get("computer") else " | old backup file"
+                rb = QRadioButton(
+                    f"Session {i + 1} | {s['start_ts']} -> {s['end_ts']} | {s['points']} pts{where}"
+                )
                 if i == len(sessions) - 1:
                     rb.setChecked(True)
                 bg.addButton(rb, i)
@@ -1131,56 +1180,21 @@ class MeterController(QWidget):
         def do_restore(checked=False):
             idx = bg.checkedId()
             if idx >= 0:
-                s = sessions[idx]
+                if self.unsaved_changes and self.records:
+                    reply = QMessageBox.question(
+                        self,
+                        "Recover Session",
+                        f"The {len(self.records)} readings now in the table aren't saved to Excel and "
+                        "will be replaced (they stay in their backup). Recover the selected session?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    )
+                    if reply != QMessageBox.StandardButton.Yes:
+                        return
                 try:
-                    with open(self.backup_path, newline="", encoding="utf-8") as f:
-                        reader = csv.reader(f)
-                        next(reader, None)  # skip the header row
-                        rows = list(reader)
-
-                    self.clear_log(init_file=False)
-                    self.table.setSortingEnabled(False)
-
-                    for r_idx in range(s["start_idx"], s["end_idx"] + 1):
-                        row = rows[r_idx]
-                        if len(row) == 6:
-                            dur_min = "0.00"
-                            try:
-                                dur_min = f"{float(row[1]) * 60:.2f}"
-                            except Exception:
-                                pass
-                            row = [row[0], dur_min, "Cond", row[2], row[3], row[4], row[5]]
-
-                        if len(row) >= 7:
-                            self.received_timestamps.add(row[0])
-                            r = self.table.rowCount()
-                            self.table.insertRow(r)
-                            for col, val in enumerate(row):
-                                self.table.setItem(r, col, NumericTableWidgetItem(str(val)))
-
-                            try:
-                                dt = datetime.datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
-                                if not getattr(self, "session_start_time", None):
-                                    self.session_start_time = dt
-                                self.plot_dates.append(dt)
-                                try:
-                                    self.plot_conds.append(float(row[4]))
-                                except ValueError:
-                                    self.plot_conds.append(0.0)
-
-                                try:
-                                    self.plot_temps.append(float(row[6]))
-                                except ValueError:
-                                    self.plot_temps.append(0.0)
-                            except Exception:
-                                pass
-
-                    self.table.setSortingEnabled(True)
-                    self.plot_data()
-                    QMessageBox.information(self, "Recover", f"Recovered {s['points']} points.")
-                except serial.SerialException as e:
-                    self.parent_app.update_meter_status(self.meter_id, False)
-                    self.is_connected = False
+                    n = self.restore_session(sessions[idx])
+                    QMessageBox.information(self, "Recover", f"Recovered {n} points.")
+                except (OSError, ValueError) as e:
+                    log.exception("Recovering a session failed")
                     QMessageBox.critical(self, "Error", f"Recovery failed: {e}")
             dialog.accept()
 
@@ -1188,22 +1202,19 @@ class MeterController(QWidget):
             idx = bg.checkedId()
             if idx >= 0:
                 s = sessions[idx]
+                reply = QMessageBox.question(
+                    self,
+                    "Delete Session",
+                    f"Permanently delete the backup of the session {s['start_ts']} -> {s['end_ts']} "
+                    f"({s['points']} points)?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
                 try:
-                    with open(self.backup_path, newline="", encoding="utf-8") as f:
-                        reader = csv.reader(f)
-                        header = next(reader, None)
-                        rows = list(reader)
-
-                    del rows[s["start_idx"] : s["end_idx"] + 1]
-
-                    with open(self.backup_path, "w", newline="", encoding="utf-8") as f:
-                        writer = csv.writer(f)
-                        if header:
-                            writer.writerow(header)
-                        writer.writerows(rows)
-
+                    recording.delete_session(s)
                     QMessageBox.information(self, "Deleted", "Session permanently deleted from backup.")
-                except Exception as e:
+                except OSError as e:
                     QMessageBox.critical(self, "Error", f"Deletion failed: {e}")
             dialog.accept()
 
@@ -1212,56 +1223,94 @@ class MeterController(QWidget):
         btn_ignore.clicked.connect(dialog.reject)
         dialog.exec()
 
+    def restore_session(self, session):
+        """Load a backup session into the table and graph (Recover Session). Returns the points."""
+        rows = recording.read_session_rows(session)
+        self.clear_log(ask=False)
+        self.table.setSortingEnabled(False)
+        for row in rows:
+            try:
+                dt = datetime.datetime.strptime(row[0], recording.TIME_FORMAT)
+            except ValueError:
+                continue
+            self._add_record(dt, tuple(row), write_backup=False)
+        self.table.setSortingEnabled(True)
+        self.table.scrollToBottom()
+        # Readings recorded after this go on in the same backup file if it's this computer's and
+        # the session runs to its end; otherwise a new backup file starts with the next reading.
+        if session.get("this_computer") and session["end_idx"] == session.get("rows_in_file", 0) - 1:
+            self.backup_path = session["path"]
+        self.unsaved_changes = bool(self.records)
+        self.plot_data()
+        self.log_event(f"♻️ Recovered {len(rows)} readings ({session['start_ts']} -> {session['end_ts']}).")
+        return len(rows)
+
+    # --- Connection ------------------------------------------------------------------------
     def toggle_connection(self, checked=False):
         if self.is_connected:
             self.disconnect_meter()
+        elif self._reconnect_port:
+            self._cancel_reconnect()
+            self.set_status("Disconnected", "gray")
+            self.log_event("Stopped trying to reconnect.")
         else:
             self.connect_meter()
 
     def find_apera_meter(self):
+        """Probe the free USB serial ports for an Apera meter; returns its port or None."""
         with scan_lock:
-            ports = [p.device for p in serial.tools.list_ports.comports()]
             used_ports = self.app_controller.get_used_ports() if self.app_controller else []
-            for p in ports:
-                if p in used_ports:
-                    continue
+            candidates = [
+                p.device
+                for p in serial.tools.list_ports.comports()
+                if p.device not in used_ports
+                and meter_protocol.plausible_port(p.device, p.description or "", p.vid)
+            ]
+            log.info("Meter %s auto-detect: trying %s", self.meter_id, ", ".join(candidates) or "no ports")
+            for p in candidates:
+                if getattr(self, "_scan_cancelled", False):
+                    return None
                 try:
-                    ts = serial.Serial(p, 115200, timeout=0.5)
+                    ts = serial.Serial(p, meter_protocol.BAUD, timeout=0.5)
                     ts.setDTR(False)
                     ts.setRTS(False)
-                    ts.write(b"&OK#\r\n")
+                    ts.write(meter_protocol.PING)
                     time.sleep(0.3)
                     resp = ts.read(ts.in_waiting)
                     ts.close()
-                    time.sleep(1.0)  # Let Windows fully release the COM port handle
-                    if b"<SH" in resp or b"<SL" in resp or b"#>" in resp:
+                    if meter_protocol.is_meter_reply(resp):
+                        time.sleep(1.0)  # let Windows fully release the COM port handle
                         return p
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug("Probing %s failed: %s", p, e)
             return None
 
     def connect_meter(self):
+        self._cancel_reconnect()
         port = self.port_combo.currentText()
-        if port == "Auto-Detect Apera Meter":
-            if not getattr(self, "is_scanning", False):
-                self.set_status("Scanning COM ports...", "gray")
-                self.btn_connect.setEnabled(False)
-                self.is_scanning = True
-
-                self.scan_id = getattr(self, "scan_id", 0) + 1
+        if port == AUTO_DETECT:
+            if getattr(self, "is_scanning", False):
+                return
+            self.set_status("Scanning COM ports...", "gray")
+            self.btn_connect.setEnabled(False)
+            self.is_scanning = True
+            self._scan_cancelled = False
+            self.scan_id = getattr(self, "scan_id", 0) or 0
+            self.scan_id += 1
             current_id = self.scan_id
+            n_ports = max(1, len(serial.tools.list_ports.comports()))
 
             def timeout_scan():
-                if getattr(self, "scan_id", None) == current_id:
-                    self.ser = None
-                    self.parent_app.update_meter_status(self.meter_id, False)
-                    self.btn_connect.setText("Connect")
+                if getattr(self, "scan_id", None) == current_id and self.is_scanning:
+                    self.scan_id = None  # a meter found after this doesn't connect any more
+                    self._scan_cancelled = True
+                    self.btn_connect.setText("🔌 Connect")
                     self.btn_connect.setEnabled(True)
                     self.set_status("Auto-Detect Timeout", "gray")
                     self.is_scanning = False
 
-            QTimer.singleShot(7000, timeout_scan)
-
+            # About 1 s per port (probe + Windows releasing it), plus some slack.
+            QTimer.singleShot(int((8 + 1.5 * n_ports) * 1000), timeout_scan)
             threading.Thread(target=self._scan_thread_task, args=(current_id,), daemon=True).start()
             return
 
@@ -1274,21 +1323,34 @@ class MeterController(QWidget):
     def _scan_thread_task(self, scan_id=None):
         found_port = self.find_apera_meter()
         if found_port:
-            time.sleep(1.5)  # Extra buffer time after scanner closes the port
-        QTimer.singleShot(0, lambda: self._finish_connect(found_port, scan_id))
+            time.sleep(0.5)  # extra buffer time after scanner closes the port
+        # Back to the GUI thread (a QTimer started from this thread would never fire).
+        self.signals.scan_finished.emit(scan_id or 0, found_port or "")
 
-    def _finish_connect(self, port, scan_id=None):
+    def _on_scan_finished(self, scan_id, port):
+        self._finish_connect(port or None, scan_id)
+
+    def _finish_connect(self, port, scan_id=None, reconnect=False):
         if scan_id is not None and getattr(self, "scan_id", None) != scan_id:
             return
         self.is_scanning = False
         self.btn_connect.setEnabled(True)
+        if self.is_connected:
+            return
         if not port:
+            self.btn_connect.setText("🔌 Connect")
             self.set_status("Auto-Detect Failed", "red")
             QMessageBox.critical(
                 self,
                 "Connection Error",
-                f"Could not auto-detect Apera Meter {self.meter_id} on any COM port.",
+                f"Could not auto-detect Apera Meter {self.meter_id} on any USB serial port.\n\n"
+                "Check that the meter is on and plugged in, or pick its port from the list.",
             )
+            return
+        other_ports = self.app_controller.get_used_ports() if self.app_controller else []
+        if port in other_ports:
+            self.btn_connect.setText("🔌 Connect")
+            self.set_status(f"{port} is already used by the other meter", "red")
             return
 
         try:
@@ -1296,225 +1358,310 @@ class MeterController(QWidget):
             if idx >= 0:
                 self.port_combo.setCurrentIndex(idx)
 
-            self.ser = serial.Serial(port, 115200, timeout=0.1)
-            self.ser.setDTR(False)
-            self.ser.setRTS(False)
-            self.is_connected = True
-            self.parent_app.update_meter_status(self.meter_id, True, self.ser.port)
-            self.btn_connect.setText("🔌 Disconnect")
-            self.btn_download.setEnabled(True)
-            self.btn_sync.setEnabled(True)
-            self.set_status(f"Connected ({port})", "#27ae60")
-
-            self.config[f"default_com_port_{self.meter_id}"] = port
-            self.save_config()
-
-            self.log_event(f"🔌 Connected to {port}.")
-
-            self.ser.write(b"&OK#\r\n")
-            if self.app_controller and self.app_controller.shared_config.get("global_auto_sync", False):
-                QTimer.singleShot(500, self.sync_time)
-
-            threading.Thread(target=self.read_serial_loop, daemon=True).start()
-            threading.Thread(target=self.keep_alive_loop, daemon=True).start()
+            ser = serial.Serial(port, meter_protocol.BAUD, timeout=0.1)
+            ser.setDTR(False)
+            ser.setRTS(False)
         except Exception as e:
-            self.set_status(f"Failed to connect: {e}", "red")
             self.btn_connect.setText("🔌 Connect")
+            if reconnect:
+                self.set_status(f"Reconnecting to {port}... ({type(e).__name__})", "red")
+                self._schedule_reconnect()
+            else:
+                self.set_status(f"Failed to connect: {e}", "red")
+                log.warning("Meter %s: couldn't open %s: %s", self.meter_id, port, e)
+            return
 
-    def disconnect_meter(self):
+        self.ser = ser
+        self._conn_gen += 1
+        gen = self._conn_gen
+        self._confirmed = False
+        self._clock_checked = False
+        self._user_disconnected = False
+        self.is_connected = True
+        self.last_data_time = 0
+        self.btn_connect.setText("🔌 Disconnect")
+        self.set_status(f"Connecting ({port})... waiting for the meter", "gray")
+        try:
+            ser.write(meter_protocol.PING)
+        except Exception as e:
+            log.warning("Meter %s: first ping on %s failed: %s", self.meter_id, port, e)
+        threading.Thread(target=self.read_serial_loop, args=(gen, ser), daemon=True).start()
+        threading.Thread(target=self.keep_alive_loop, args=(gen, ser), daemon=True).start()
+        QTimer.singleShot(CONFIRM_TIMEOUT_MS, lambda: self._check_confirmed(gen, port, reconnect))
+
+    def _check_confirmed(self, gen, port, reconnect=False):
+        """Let go of a port that never answered like an Apera meter (it may be another device)."""
+        if gen != self._conn_gen or not self.is_connected or self._confirmed:
+            return
+        self._close_connection()
+        if reconnect:
+            self.set_status(f"Reconnecting to {port}... (no answer yet)", "red")
+            self._schedule_reconnect()
+            return
+        self.set_status(f"No Apera meter answered on {port}", "red")
+        self.log_event(f"No Apera meter answered on {port}, so the port was closed again.")
+        log.warning("Meter %s: no meter answered on %s", self.meter_id, port)
+
+    def _on_meter_confirmed(self, gen):
+        if gen != self._conn_gen or not self.is_connected or self._confirmed:
+            return
+        self._confirmed = True
+        port = self.ser.port if self.ser else ""
+        was_reconnecting = self._reconnect_port is not None
+        self._reconnect_port = None
+        self._reconnect_attempt = 0
+        self.last_auto_dump_time = time.time()
+        self.last_data_time = time.time()  # the no-readings alert counts from here
+        if self.parent_app:
+            self.parent_app.update_meter_status(self.meter_id, True, port)
+        self.btn_download.setEnabled(True)
+        self.btn_sync.setEnabled(True)
+        self.set_status(f"Connected ({port})", "#27ae60")
+        self._remember_port(port)
+        if was_reconnecting:
+            self.log_event(f"🔌 Reconnected to {port}.")
+            log.info("Meter %s reconnected on %s", self.meter_id, port)
+            if self._was_recording_when_lost:
+                self._send_status_alert(
+                    f"✅ **Meter {self.meter_id}** reconnected on {port}; recording goes on."
+                )
+        else:
+            self.log_event(f"🔌 Connected to {port}.")
+            log.info("Meter %s connected on %s", self.meter_id, port)
+        if self.app_controller and self.app_controller.shared_config.get("global_auto_sync", True):
+            QTimer.singleShot(500, self.sync_time)
+
+    def _close_connection(self):
+        """Stop this connection's threads; the reader thread closes the port itself."""
         self.is_connected = False
-
-        # Defer ser.close() to a background thread because PySerial close() can block
-        # on Windows if another thread is currently polling it.
-        def async_close(ser):
-            time.sleep(0.1)  # Let the read loops exit first
-            if ser and ser.is_open:
-                try:
-                    ser.close()
-                except Exception:
-                    pass
-
-        threading.Thread(target=async_close, args=(self.ser,), daemon=True).start()
-
+        self._confirmed = False
+        self._conn_gen += 1
         self.btn_connect.setText("🔌 Connect")
-        self.set_status("Disconnected", "gray")
         self.btn_download.setEnabled(False)
         self.btn_sync.setEnabled(False)
-        self.sn_label.setText("SN: Unknown")
-        self.model_label.setText("Model: Unknown")
+        if self._memory is not None:
+            self._finish_memory_download()
         if self.parent_app:
             self.parent_app.update_meter_status(self.meter_id, False)
 
-        self.log_event("❌ Disconnected.")
+    def disconnect_meter(self):
+        self._user_disconnected = True
+        self._cancel_reconnect()
+        was_connected = self.is_connected
+        self._close_connection()
+        self.set_status("Disconnected", "gray")
+        self.sn_label.setText("SN: Unknown")
+        self.model_label.setText("Model: Unknown")
+        if was_connected:
+            self.log_event("❌ Disconnected.")
 
-    def read_serial_loop(self):
+    def _on_connection_lost(self, gen, reason):
+        """The USB connection dropped (unplugged, meter off, cable): reset and keep trying to reconnect."""
+        if gen != self._conn_gen:
+            return
+        port = self.ser.port if self.ser else self.port_combo.currentText()
+        self._was_recording_when_lost = self.is_recording
+        self._close_connection()
+        self.set_status(f"Connection lost ({reason.split(':')[0]}), reconnecting...", "red")
+        self.log_event(f"⚠️ Lost the connection to {port} ({reason}). Trying to reconnect...")
+        log.warning("Meter %s lost the connection on %s: %s", self.meter_id, port, reason)
+        if self.is_recording:
+            self._send_status_alert(
+                f"⚠️ **Meter {self.meter_id}** lost its USB connection on {port} while recording "
+                f"({reason}). The app keeps trying to reconnect."
+            )
+        if port and port != AUTO_DETECT:
+            self._reconnect_port = port
+            self._reconnect_attempt = 0
+            self._schedule_reconnect()
+
+    def _schedule_reconnect(self):
+        if not self._reconnect_port or self._user_disconnected:
+            return
+        delay = RECONNECT_DELAYS_S[min(self._reconnect_attempt, len(RECONNECT_DELAYS_S) - 1)]
+        self._reconnect_attempt += 1
+        port = self._reconnect_port
+        QTimer.singleShot(int(delay * 1000), lambda: self._try_reconnect(port))
+
+    def _try_reconnect(self, port):
+        if self.is_connected or self._user_disconnected or self._reconnect_port != port:
+            return
+        present = [p.device for p in serial.tools.list_ports.comports()]
+        if port not in present:
+            self.set_status(f"Waiting for {port} to come back (try {self._reconnect_attempt})", "red")
+            self._schedule_reconnect()
+            return
+        self.refresh_ports()
+        self._finish_connect(port, reconnect=True)
+
+    def _cancel_reconnect(self):
+        self._reconnect_port = None
+        self._reconnect_attempt = 0
+
+    def read_serial_loop(self, gen=None, ser=None):
+        """Read packets until this connection ends. Owns the port: it closes it when done."""
+        gen = self._conn_gen if gen is None else gen
+        ser = ser or self.ser
         buffer = b""
-        self.last_data_time = 0
-        while self.is_connected:
+        error = None
+        while self.is_connected and gen == self._conn_gen:
             try:
-                if self.ser.in_waiting > 0:
-                    data = self.ser.read(self.ser.in_waiting)
-                    buffer += data
-                    buffer = buffer.replace(b"#\r\n", b"")
-                    while b">" in buffer:
-                        idx = buffer.find(b">")
-                        packet = buffer[: idx + 1]
-                        buffer = buffer[idx + 1 :]
+                waiting = ser.in_waiting
+                if waiting > 0:
+                    packets, buffer = meter_protocol.split_packets(buffer + ser.read(waiting))
+                    for packet in packets:
                         try:
-                            self.process_packet(packet)
-                        except Exception as e:
-                            print(f"Meter {self.meter_id} Packet Parse Error: {e}")
+                            self.process_packet(packet, gen)
+                        except Exception:
+                            log.exception("Meter %s: couldn't handle packet %r", self.meter_id, packet[:16])
             except Exception as e:
-                print(f"Meter {self.meter_id} Serial Error: {e}")
-                self.signals.update_status.emit(f"Disconnected ({type(e).__name__})", "red")
-                self.is_connected = False
+                error = f"{type(e).__name__}: {e}"
                 break
             time.sleep(0.05)
+        try:
+            ser.close()
+        except Exception:  # noqa: S110 - the port may already be gone with the USB device
+            pass
+        if error and gen == self._conn_gen:
+            self.signals.connection_lost.emit(gen, error)
 
-    def keep_alive_loop(self):
-        while self.is_connected:
-            if self.config.get(f"keep_alive_{self.meter_id}", True):
-                if time.time() - self.last_data_time > 2.0:
+    def keep_alive_loop(self, gen=None, ser=None):
+        """Ping the meter when it has been quiet for 2 s. A port that hasn't answered like a meter
+        gets at most three pings (it may be another instrument)."""
+        gen = self._conn_gen if gen is None else gen
+        ser = ser or self.ser
+        unconfirmed_pings = 0
+        while self.is_connected and gen == self._conn_gen:
+            if self.config.get(f"keep_alive_{self.meter_id}", True) or not self._confirmed:
+                if time.time() - self.last_data_time > 2.0 and (self._confirmed or unconfirmed_pings < 3):
                     try:
-                        if self.ser and self.ser.is_open:
-                            self.ser.write(b"&OK#\r\n")
-                    except Exception:
+                        if ser.is_open:
+                            ser.write(meter_protocol.PING)
+                            if not self._confirmed:
+                                unconfirmed_pings += 1
+                    except Exception:  # noqa: S110 - the reader thread reports a lost connection
                         pass
             time.sleep(1.5)
 
-    def process_packet(self, packet):
+    def _send_status_alert(self, msg):
+        """A Discord message about the connection, if alerts are on for this meter."""
+        mid = self.meter_id
+        if self.config.get(f"alert_enabled_{mid}", False) and self.config.get(
+            f"alert_connection_{mid}", True
+        ):
+            self.send_discord_alert(self.config.get(f"alert_webhook_{mid}", ""), msg)
+
+    def process_packet(self, packet, gen=None):
+        """Handle one packet from the meter (runs in the serial thread)."""
         if not packet:
             return
         packet = packet.strip(b"\r\n")
-        p_len = len(packet)
-        if p_len < 3 or packet == b">" or packet == b"#>":
+        gen = self._conn_gen if gen is None else gen
+        if getattr(self, "_confirm_sent_gen", None) != gen and meter_protocol.is_meter_reply(packet):
+            self._confirm_sent_gen = gen
+            self.signals.meter_confirmed.emit(gen)
+        if len(packet) < 3 or packet == b">" or packet == b"#>":
+            return
+        info = meter_protocol.parse_info_packet(packet)
+        if info is not None:
+            self.signals.update_device_info.emit(*info)
+            return
+        try:
+            reading = meter_protocol.parse_data_packet(packet)
+        except ValueError:
+            reading = None
+        if reading is not None and reading.stored and self._memory is not None:
+            self.last_data_time = time.time()
+            self.signals.memory_reading.emit(reading)  # Download Raw Memory is running
             return
 
-        if (packet.startswith(b"<DS") or packet.startswith(b"<DN")) and p_len >= 12:
+        if reading is not None:
             self.last_data_time = time.time()
             try:
-                payload = packet[3:11]
-                w1, w2, w3, w4 = struct.unpack(">HHHH", payload[0:8])
-
-                mode = w1 // 4096
-                w1_rem = w1 % 4096
-                mm = w1_rem // 64
-                ss = w1_rem % 64
-
-                yy = w2 // 512
-                w2_rem = w2 % 512
-                mt = w2_rem // 32
-                dd = w2_rem % 32
-
-                hh = w3 // 2048
-                w3_rem = w3 % 2048
-                MTC = w3_rem // 1024
-                NTC = w3_rem % 1024
-
-                b = w4 // 8192
-                w4_rem = w4 % 8192
-                dot = w4_rem // 2048
-                DP = w4_rem % 2048
-
-                temp_c = NTC / 10.0
+                # Times in the log are the computer's clock: the meter's own clock can be far off
+                # (e.g. after a battery change). The meter's time is kept in the Meter Clock column.
+                pc_now = datetime.datetime.now()
+                temp_c = reading.temp_c
                 self.last_serial_temp = f"{temp_c:.1f}"
-                mode_str = "Cond" if mode == 2 else f"Mode({mode})"
+                mode_str = reading.mode_name
+                dt_str = reading.meter_time_text  # the meter's own clock
+                screen_str = reading.display
+                w4 = reading.raw_word4
 
-                val_float = DP
-                if dot == 1:
-                    val_float = DP / 10.0
-                elif dot == 2:
-                    val_float = DP / 100.0
-                elif dot == 3:
-                    val_float = DP / 1000.0
+                if not self._clock_checked:
+                    self._clock_checked = True
+                    offset = meter_protocol.clock_offset_seconds(reading.meter_time, pc_now)
+                    if offset is None or abs(offset) > CLOCK_WARN_S:
+                        if offset is None:
+                            how = "isn't set to a valid date"
+                        else:
+                            rel = meter_protocol.describe_offset(offset).replace(" ahead", " ahead of")
+                            how = f"is {rel} the computer's"
+                        self.signals.notice.emit(
+                            f"⚠️ The meter's clock {how} (it says {dt_str}). The log uses the computer's "
+                            "clock; Sync Meter Time sets the meter's."
+                        )
+                        log.warning("Meter %s clock %s (meter says %s)", self.meter_id, how, dt_str)
 
-                screen_str = f"{val_float:.{dot}f}"
+                if not reading.is_conductivity:
+                    if self._last_mode_notice != reading.mode:
+                        self._last_mode_notice = reading.mode
+                        self.signals.notice.emit(
+                            f"The meter is in {mode_str} mode; only conductivity readings are logged. "
+                            "Switch the meter to conductivity to record."
+                        )
+                    return
+                new_ms = reading.cond_ms
+                if new_ms is None:
+                    if self._last_mode_notice != ("unit", reading.unit_code):
+                        self._last_mode_notice = ("unit", reading.unit_code)
+                        self.signals.notice.emit(
+                            f"The meter sent a conductivity reading in an unknown unit (code "
+                            f"{reading.unit_code}); it wasn't logged."
+                        )
+                    return
+                self._last_mode_notice = None
+                unit_str = reading.unit
+                cond_us_val = new_ms * 1000
+                cond_us = f"{cond_us_val:.1f}"
+                # A reading in µS/cm keeps all its digits in the mS/cm column (12.3 µS = 0.012300 mS).
+                cond_ms = f"{new_ms:.3f}" if unit_str == "mS/cm" else f"{new_ms:.6f}"
 
-                cond_us, cond_ms = "", ""
-                unit_str = "-"
-                cond_us_val = val_float
-                if mode == 2:
-                    u_val = b + 10
-                    if u_val == 10:
-                        cond_ms = f"{val_float:.3f}"
-                        cond_us = f"{val_float * 1000:.1f}"
-                        cond_us_val = val_float * 1000
-                        unit_str = "mS/cm"
-                    elif u_val == 11:
-                        cond_ms = f"{val_float / 1000:.3f}"
-                        cond_us = f"{val_float:.1f}"
-                        cond_us_val = val_float
-                        unit_str = "uS/cm"
-                    val_changed = False
-                    try:
-                        new_ms = float(cond_ms)
-                        if getattr(self, "first_serial_time", None) is None:
-                            self.first_serial_time = time.time()
-
-                        if getattr(self, "last_serial_cond_ms", None) != new_ms:
-                            self.last_serial_cond_ms = new_ms
-                            if hasattr(self.app_controller, "ocr_pipeline"):
-                                if not hasattr(self.app_controller.ocr_pipeline, "latest_serial_ms"):
-                                    self.app_controller.ocr_pipeline.latest_serial_ms = {}
-                                self.app_controller.ocr_pipeline.latest_serial_ms[
-                                    f"m{self.meter_id}_cond"
-                                ] = new_ms
-                            val_changed = True
-                        self.last_serial_cond_ms = new_ms
-                    except Exception:
-                        pass
-                else:
-                    cond_us = str(val_float)
+                val_changed = False
+                if getattr(self, "first_serial_time", None) is None:
+                    self.first_serial_time = time.time()
+                if getattr(self, "last_serial_cond_ms", None) != new_ms:
+                    if hasattr(self.app_controller, "ocr_pipeline"):
+                        if not hasattr(self.app_controller.ocr_pipeline, "latest_serial_ms"):
+                            self.app_controller.ocr_pipeline.latest_serial_ms = {}
+                        self.app_controller.ocr_pipeline.latest_serial_ms[f"m{self.meter_id}_cond"] = new_ms
+                    val_changed = True
+                self.last_serial_cond_ms = new_ms
 
                 if cond_us_val > 0:
-                    curr_log = math.log10(cond_us_val)
-                    if self.config.get(f"alert_enabled_{self.meter_id}", False):
-                        webhook_url = self.config.get(f"alert_webhook_{self.meter_id}", "")
-                        try:
-                            threshold = float(self.config.get(f"alert_threshold_{self.meter_id}", 0.5))
-                        except Exception:
-                            threshold = 0.5
-                        try:
-                            cooldown_min = float(self.config.get(f"alert_cooldown_{self.meter_id}", 5.0))
-                        except Exception:
-                            cooldown_min = 5.0
-                        try:
-                            delay_min = float(self.config.get(f"alert_delay_{self.meter_id}", 5.0))
-                        except Exception:
-                            delay_min = 5.0
+                    self._check_change_alert(math.log10(cond_us_val), cond_us_val)
 
-                        if self.alert_start_time is None:
-                            self.alert_start_time = time.time()
-
-                        if time.time() - self.alert_start_time < delay_min * 60:
-                            self.baseline_log_cond = curr_log
-                        else:
-                            if self.baseline_log_cond is None:
-                                self.baseline_log_cond = curr_log
-
-                            if abs(curr_log - self.baseline_log_cond) >= threshold:
-                                if time.time() - self.last_alert_time > cooldown_min * 60:
-                                    self.last_alert_time = time.time()
-                                    msg = (
-                                        f"🔔 **Meter {self.meter_id} Alert**\n"
-                                        "Conductivity changed significantly!\n"
-                                        f"Previous baseline log: {self.baseline_log_cond:.3f}\n"
-                                        f"Current log: {curr_log:.3f}\n"
-                                        f"Current value: {cond_us_val:.1f} µS/cm"
-                                    )
-                                    self.baseline_log_cond = curr_log
-                                    self.send_discord_alert(webhook_url, msg)
-
-                dt_str = f"20{yy:02d}-{mt:02d}-{dd:02d} {hh:02d}:{mm:02d}:{ss:02d}"
-                dt_obj = datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
-
-                is_dn_packet = packet.startswith(b"<DN")
-
-                if dt_str in self.received_timestamps:
+                # The meter sends the same reading more than once; drop repeats of a meter-clock
+                # second seen in the last 3 s (a stuck meter clock still gives a reading every 3 s).
+                now_s = time.time()
+                first_seen = self.recent_meter_times.get(dt_str)
+                if first_seen is not None and now_s - first_seen < 3.0:
                     return
-                self.received_timestamps.add(dt_str)
+                self.recent_meter_times[dt_str] = now_s
+                if len(self.recent_meter_times) > 200:
+                    self.recent_meter_times = {
+                        k: v for k, v in list(self.recent_meter_times.items()) if now_s - v < 10.0
+                    }
 
-                row_data = (dt_str, mode_str, cond_us, cond_ms, f"{temp_c:.1f}")
+                row_data = (
+                    pc_now.strftime(recording.TIME_FORMAT),
+                    mode_str,
+                    cond_us,
+                    cond_ms,
+                    f"{temp_c:.1f}",
+                    "-",
+                    dt_str,
+                )
 
                 # Previous serial reading from this meter, recorded with dataset crops as a stability check
                 prev_display_str = getattr(self, "last_dataset_display_str", "")
@@ -1525,10 +1672,7 @@ class MeterController(QWidget):
                 is_manual = getattr(app, "manual_snap_requested", False)
 
                 if self.is_recording:
-                    if getattr(self, "ocr_active", False):
-                        # Throttle OCR visual logging to 10s if we wanted to
-                        pass
-                    self.signals.update_tree.emit(dt_obj, row_data)
+                    self.signals.update_tree.emit(pc_now, row_data)
 
                 # --- SMART DATASET RECORDING LOGIC ---
                 if is_manual and not getattr(app, "dataset_session_dir", None):
@@ -1547,8 +1691,6 @@ class MeterController(QWidget):
 
                 if (is_continuous or is_manual) and getattr(app, "dataset_session_dir", None):
                     # The physical LCD updates ~Xms AFTER the serial packet is sent.
-                    from PyQt6.QtCore import QTimer
-
                     ts = time.time()
 
                     if is_manual:
@@ -1639,27 +1781,55 @@ class MeterController(QWidget):
                         app.calibration_burst_serial_ts = time.time()
                         app.calibration_burst_screen_val = screen_str
                         app.calibration_burst_count = 15  # 15 frames @ 30 FPS = ~500ms burst
-                        try:
-                            from PyQt6.QtCore import QTimer
+                        self.signals.burst_started.emit()  # the button is updated in the GUI thread
 
-                            QTimer.singleShot(
-                                0, lambda: app.btn_calibration_burst.setText("Recording Burst...")
-                            )
-                            QTimer.singleShot(0, lambda: app.btn_calibration_burst.setEnabled(False))
-                        except Exception:
-                            pass
+            except Exception:
+                log.exception("Meter %s: couldn't handle reading %r", self.meter_id, packet[:16])
 
-            except Exception as e:
-                print(f"Packet error: {e}")
+    def _check_change_alert(self, curr_log, cond_us_val):
+        """Discord alert when log10(conductivity) moved by the threshold since the baseline."""
+        if not self.config.get(f"alert_enabled_{self.meter_id}", False):
+            return
+        webhook_url = self.config.get(f"alert_webhook_{self.meter_id}", "")
+        try:
+            threshold = float(self.config.get(f"alert_threshold_{self.meter_id}", 0.5))
+        except (TypeError, ValueError):
+            threshold = 0.5
+        try:
+            cooldown_min = float(self.config.get(f"alert_cooldown_{self.meter_id}", 5.0))
+        except (TypeError, ValueError):
+            cooldown_min = 5.0
+        try:
+            delay_min = float(self.config.get(f"alert_delay_{self.meter_id}", 5.0))
+        except (TypeError, ValueError):
+            delay_min = 5.0
 
-        elif packet.startswith(b"<SH") and p_len >= 12:
-            payload = packet[3:11]
-            hex_str = "-".join([f"{b:02X}" for b in payload])
-            self.signals.update_device_info.emit("SN", hex_str)
-        elif packet.startswith(b"<P2") and p_len >= 12:
-            payload = packet[3:11]
-            hex_str = "-".join([f"{b:02X}" for b in payload])
-            self.signals.update_device_info.emit("Model", hex_str)
+        if self.alert_start_time is None:
+            self.alert_start_time = time.time()
+
+        if time.time() - self.alert_start_time < delay_min * 60:
+            self.baseline_log_cond = curr_log
+            return
+        if self.baseline_log_cond is None:
+            self.baseline_log_cond = curr_log
+        if abs(curr_log - self.baseline_log_cond) >= threshold:
+            if time.time() - self.last_alert_time > cooldown_min * 60:
+                self.last_alert_time = time.time()
+                msg = (
+                    f"🔔 **Meter {self.meter_id} Alert**\n"
+                    "Conductivity changed significantly!\n"
+                    f"Previous baseline log: {self.baseline_log_cond:.3f}\n"
+                    f"Current log: {curr_log:.3f}\n"
+                    f"Current value: {cond_us_val:.1f} µS/cm"
+                )
+                self.baseline_log_cond = curr_log
+                self.send_discord_alert(webhook_url, msg)
+
+    def _on_burst_started(self):
+        app = self.app_controller
+        if app is not None and hasattr(app, "btn_calibration_burst"):
+            app.btn_calibration_burst.setText("Recording Burst...")
+            app.btn_calibration_burst.setEnabled(False)
 
     def _reset_manual_snap_ui(self):
         if hasattr(self.app_controller, "btn_manual_snap"):
@@ -1667,65 +1837,87 @@ class MeterController(QWidget):
             self.app_controller.btn_manual_snap.setEnabled(True)
 
     def log_point_ui(self, dt, row_data):
+        """Add a reading (from the serial thread or the camera) to the table, graph and backup.
+
+        row_data: serial readings (DateTime, Mode, uS, mS, Temp, OCR conf, Meter Clock); camera
+        readings (DateTime, "OCR", uS, mS, "-", conf). The duration is added here.
+        """
         if not getattr(self, "session_start_time", None):
             self.session_start_time = dt
-
         duration_min = (dt - self.session_start_time).total_seconds() / 60.0
-
-        if len(row_data) == 5:
-            full_row = (
-                row_data[0],
-                f"{duration_min:.2f}",
-                row_data[1],
-                row_data[2],
-                row_data[3],
-                row_data[4],
-                "-",
-            )
-        elif len(row_data) == 6:
-            full_row = (
-                row_data[0],
-                f"{duration_min:.2f}",
-                row_data[1],
-                row_data[2],
-                row_data[3],
-                row_data[4],
-                row_data[5],
-            )
+        r = list(row_data)
+        if len(r) >= len(self.columns):  # already a full row
+            full_row = tuple(r)
         else:
-            full_row = row_data
+            r += ["-", ""][len(r) - 5 :]  # no OCR confidence / meter clock
+            full_row = (r[0], f"{duration_min:.2f}", *r[1:7])
+        self._add_record(dt, full_row)
+        self.unsaved_changes = True
+        self.schedule_plot()
 
-        self.plot_dates.append(dt)
+    def _add_record(self, dt, full_row, write_backup=True):
+        full_row = tuple("" if v is None else str(v) for v in full_row)
+        full_row += ("",) * (len(self.columns) - len(full_row))
+        self.records.append(full_row)
+
         try:
-            self.plot_conds.append(float(full_row[4]))
+            cond = float(full_row[4])
         except ValueError:
-            self.plot_conds.append(0.0)
-
+            cond = 0.0
         try:
-            self.plot_temps.append(float(full_row[5]))
+            temp = float(full_row[5])
         except ValueError:
-            self.plot_temps.append(float("nan"))
+            temp = float("nan")
+        # The graph's lists stay in time order (camera and serial readings can cross by a moment).
+        if not self.plot_dates or dt >= self.plot_dates[-1]:
+            self.plot_dates.append(dt)
+            self.plot_daynums.append(mdates.date2num(dt))
+            self.plot_conds.append(cond)
+            self.plot_temps.append(temp)
+        else:
+            i = bisect.bisect_right(self.plot_dates, dt)
+            self.plot_dates.insert(i, dt)
+            self.plot_daynums.insert(i, mdates.date2num(dt))
+            self.plot_conds.insert(i, cond)
+            self.plot_temps.insert(i, temp)
 
+        sorting = self.table.isSortingEnabled()
         self.table.setSortingEnabled(False)
         row_idx = self.table.rowCount()
         self.table.insertRow(row_idx)
         for col, text in enumerate(full_row):
-            self.table.setItem(row_idx, col, NumericTableWidgetItem(str(text)))
-        self.table.setSortingEnabled(True)
+            self.table.setItem(row_idx, col, NumericTableWidgetItem(text))
+        self.table.setSortingEnabled(sorting)
         self.table.scrollToBottom()
-        self.unsaved_changes = True
 
+        if write_backup:
+            self._write_backup(dt, full_row)
+
+    def _write_backup(self, dt, full_row):
+        """Every reading also goes to this session's backup CSV (Recover Session reads it)."""
         try:
-            is_new = not os.path.exists(self.backup_path)
-            with open(self.backup_path, "a", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                if is_new:
-                    writer.writerow(self.columns)
-                writer.writerow(full_row)
-        except Exception:
-            pass
+            if self.backup_path is None:
+                start = getattr(self, "session_start_time", None) or dt
+                self.backup_path = recording.new_backup_path(self.backup_dir, self.meter_id, start, COMPUTER)
+            recording.append_backup_row(self.backup_path, full_row, self.columns)
+            self._backup_failed = False
+        except OSError as e:
+            if not getattr(self, "_backup_failed", False):
+                self._backup_failed = True
+                log.exception("Meter %s: couldn't write the backup %s", self.meter_id, self.backup_path)
+                self.log_event(f"❌ Couldn't write the crash-recovery backup: {e}")
 
-        self.schedule_plot()
+    def _connected_status(self):
+        """The status-bar text for the connection as it is now (after a passing message)."""
+        if self._reconnect_port:
+            return f"Connection lost, reconnecting to {self._reconnect_port}...", "red"
+        if self.is_connected and self._confirmed and self.ser is not None:
+            if self._stall_alerted:
+                return "No reading from the meter", "red"
+            return f"Connected ({self.ser.port})", "#27ae60"
+        if self.is_recording:
+            return "Recording...", "gray"
+        return "Disconnected", "gray"
 
     def set_status(self, text, color):
         if self.app_controller:
@@ -1739,6 +1931,9 @@ class MeterController(QWidget):
             self.btn_connect.setText("🔌 Connect")
             self.btn_download.setEnabled(False)
             self.btn_sync.setEnabled(False)
+
+    def _restore_status_later(self, ms=4000):
+        QTimer.singleShot(ms, lambda: self.set_status(*self._connected_status()))
 
     def set_device_info(self, typ, val):
         if typ == "SN":
@@ -1754,7 +1949,7 @@ class MeterController(QWidget):
             try:
                 requests.post(url, json={"content": msg}, timeout=5)
             except Exception as e:
-                print("Webhook error:", e)
+                log.warning("Discord alert for Meter %s failed: %s", self.meter_id, e)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1767,14 +1962,101 @@ class MeterController(QWidget):
             )
             QMessageBox.information(self, "Test Sent", "Test alert dispatched to Discord.")
         else:
-            QMessageBox.warning(self, "No Webhook", "Please save a Discord Webhook URL first.")
+            QMessageBox.warning(self, "No Webhook", "Please enter a Discord Webhook URL first.")
 
+    # --- Timers that don't depend on readings arriving -------------------------------------
+    def _housekeeping(self):
+        """Every 5 s: auto-save, auto-stop, the no-readings alert and the memory auto-dump."""
+        for job in (self._autosave_if_due, self._autostop_if_due, self._check_stall, self._auto_dump_if_due):
+            try:
+                job()
+            except Exception:
+                log.exception("Meter %s: %s failed", self.meter_id, job.__name__)
+
+    def _autosave_if_due(self):
+        if not (self.is_recording and self.combo_autosave.currentText() == "Every X Minutes"):
+            return
+        try:
+            interval_min = max(0.1, float(self.ent_autosave_min.text()))
+        except ValueError:
+            interval_min = 5.0
+        if time.monotonic() - self._last_autosave >= interval_min * 60:
+            self._last_autosave = time.monotonic()
+            if self.unsaved_changes and self.records:
+                self.save_excel(auto=True, is_background_autosave=True)
+
+    def _autostop_if_due(self):
+        mode = self.combo_autostop.currentText()
+        start = getattr(self, "session_start_time", None)
+        if not self.is_recording or mode == "Off" or start is None:
+            return
+        try:
+            limit_min = float(self.ent_autostop_min.text())
+        except ValueError:
+            limit_min = 60.0
+        elapsed_min = (datetime.datetime.now() - start).total_seconds() / 60.0
+        if elapsed_min < limit_min:
+            return
+        if mode in ("Stop Meter", "Stop Both"):
+            self.toggle_record()
+            self.log_event(f"🛑 Auto-Stop: recording stopped after {elapsed_min:.1f} minutes.")
+        app = self.parent_app
+        if mode in ("Stop OCR Log", "Stop Both") and app is not None and hasattr(app, "ocr_autolog_checkbox"):
+            if app.ocr_autolog_checkbox.isChecked():
+                app.ocr_autolog_checkbox.setChecked(False)
+                self.log_event(f"🔴 Auto-Stop: OCR logging stopped after {elapsed_min:.1f} minutes.")
+
+    def _check_stall(self):
+        """Warn (status bar, event log, Discord) when a recording meter stops sending readings."""
+        if not (self.is_connected and self._confirmed and self.is_recording):
+            self._stall_alerted = False
+            return
+        try:
+            limit_s = float(self.config.get(f"stall_alert_s_{self.meter_id}", 60))
+        except (TypeError, ValueError):
+            limit_s = 60.0
+        if limit_s <= 0:
+            return
+        quiet_s = time.time() - self.last_data_time
+        port = self.ser.port if self.ser else ""
+        if quiet_s >= limit_s and not self._stall_alerted:
+            self._stall_alerted = True
+            self.set_status(f"No reading for {quiet_s:.0f} s", "red")
+            self.log_event(f"⚠️ No reading from the meter for {quiet_s:.0f} s (still connected on {port}).")
+            log.warning("Meter %s: no reading for %.0f s on %s", self.meter_id, quiet_s, port)
+            self._send_status_alert(
+                f"⚠️ **Meter {self.meter_id}**: no reading for {quiet_s:.0f} s while recording. "
+                "Check the meter (is it on and in conductivity mode?)."
+            )
+        elif quiet_s < limit_s and self._stall_alerted:
+            self._stall_alerted = False
+            self.set_status(*self._connected_status())
+            self.log_event("✅ Readings are arriving again.")
+            self._send_status_alert(f"✅ **Meter {self.meter_id}**: readings are arriving again.")
+
+    def _auto_dump_if_due(self):
+        if not (self.is_connected and self._confirmed) or self._memory is not None:
+            return
+        if not self.config.get(f"auto_dump_enabled_{self.meter_id}", False):
+            return
+        try:
+            hours = float(self.config.get(f"default_auto_dump_hrs_{self.meter_id}", 2.0))
+        except (TypeError, ValueError):
+            return
+        if hours > 0 and time.time() - self.last_auto_dump_time >= hours * 3600:
+            self.last_auto_dump_time = time.time()
+            self.download_memory(automatic=True)
+
+    # --- Graph ----------------------------------------------------------------------------
     def schedule_plot(self):
         if not getattr(self, "_plot_scheduled", False):
             self._plot_scheduled = True
-            QTimer.singleShot(500, self.plot_data)
+            # Long runs redraw a little less often, so the window stays responsive.
+            QTimer.singleShot(500 if len(self.plot_dates) < 5000 else 1500, self.plot_data)
 
     def plot_data(self):
+        import numpy as np
+
         self._plot_scheduled = False
         self.ax.clear()
         self.ax2.clear()
@@ -1797,7 +2079,7 @@ class MeterController(QWidget):
         self.ax.grid(True, linestyle="--", alpha=0.3)
         self.ax.tick_params(colors="white")
 
-        self.ax2.set_ylabel("d(log C)/dt", color="#9b59b6")
+        self.ax2.set_ylabel("d(log C)/dt (per min)", color="#9b59b6")
         self.ax2.yaxis.set_label_position("right")  # clear() moves it left, on top of the cond. ticks
         self.ax2.tick_params(colors="white")
 
@@ -1813,340 +2095,312 @@ class MeterController(QWidget):
         if self.plot_dates:
             import matplotlib.ticker as ticker
 
-            # Sort all arrays by date to prevent zig-zag lines from async threads
-            points = zip(self.plot_dates, self.plot_conds, self.plot_temps, strict=False)
-            sorted_data = sorted(points, key=lambda x: x[0])
-            columns = [list(x) for x in zip(*sorted_data, strict=False)]
-            self.plot_dates, self.plot_conds, self.plot_temps = columns
-
             is_duration = self.xaxis_combo.currentText() == "X-Axis: Duration (min)"
-
             if not getattr(self, "session_start_time", None):
                 self.session_start_time = self.plot_dates[0]
 
-            durations = [(d - self.session_start_time).total_seconds() / 60.0 for d in self.plot_dates]
-
-            if self.is_recording and self.combo_autosave.currentText() == "Every X Minutes":
-                try:
-                    autosave_interval = float(self.ent_autosave_min.text())
-                except Exception:
-                    autosave_interval = 5.0
-
-                if len(durations) > 0:
-                    elapsed_min = durations[-1]
-                    last_autosave = getattr(self, "last_autosave_min", 0.0)
-                    if (elapsed_min - last_autosave) >= autosave_interval:
-                        self.save_excel(auto=True, is_background_autosave=True)
-                        self.last_autosave_min = elapsed_min
-
-            if (
-                self.is_recording
-                and hasattr(self, "combo_autostop")
-                and self.combo_autostop.currentText() != "Off"
-            ):
-                mode = self.combo_autostop.currentText()
-                try:
-                    autostop_interval = float(self.ent_autostop_min.text())
-                except Exception:
-                    autostop_interval = 60.0
-
-                if len(durations) > 0:
-                    elapsed_min = durations[-1]
-                    if elapsed_min >= autostop_interval:
-                        import datetime
-
-                        if mode in ["Stop Meter", "Stop Both"] and getattr(self, "is_recording", False):
-                            self.toggle_record()
-                            self.log_event(f"🛑 Auto-Stop triggered for Meter at {elapsed_min:.1f} minutes.")
-
-                        if (
-                            mode in ["Stop OCR Log", "Stop Both", "Stop Camera"]
-                            and hasattr(self.parent_app, "ocr_autolog_checkbox")
-                            and self.parent_app.ocr_autolog_checkbox.isChecked()
-                        ):
-                            self.parent_app.ocr_autolog_checkbox.setChecked(False)
-                            self.log_event(
-                                f"🔴 Auto-Stop triggered for OCR Logging at {elapsed_min:.1f} minutes."
-                            )
-
-            if is_duration:
-                x_data = durations
-                self.ax_temp.set_xlabel("Duration (min)", color="white")
-            else:
-                x_data = self.plot_dates
-                self.ax_temp.set_xlabel("Time", color="white")
-
-            if is_us:
-                plot_y = [y * 1000.0 for y in self.plot_conds]
-            else:
-                plot_y = self.plot_conds
-
-            self.ax.plot(x_data, plot_y, marker="o", linestyle="-", color="#3498db", label="Cond")
-
+            # With a Time Window, only that window is drawn (it used to draw everything and zoom).
+            first = 0
+            win_min = None
             if not self.auto_time_chk.isChecked():
                 try:
                     win_min = float(self.ent_time_win.text())
-                    xmax = x_data[-1]
-                    if is_duration:
-                        xmin = xmax - win_min
-                    else:
-                        xmin = xmax - datetime.timedelta(minutes=win_min)
-                    self.ax.set_xlim(xmin, xmax)
-                except Exception:
-                    pass
+                    first = plot_math.window_start(self.plot_dates, datetime.timedelta(minutes=win_min))
+                except ValueError:
+                    win_min = None
+            dates = self.plot_dates[first:]
+            if len(self.plot_daynums) != len(self.plot_dates):
+                self.plot_daynums = list(mdates.date2num(self.plot_dates))
+            day_nums = np.asarray(self.plot_daynums[first:], dtype=float)
+            minutes = (day_nums - mdates.date2num(self.session_start_time)) * 1440.0
+            conds = np.asarray(self.plot_conds[first:], dtype=float) * (1000.0 if is_us else 1.0)
+            temps = np.asarray(self.plot_temps[first:], dtype=float)
+            conds_drawn = np.where(conds > 0, conds, np.nan)  # 0.0 = no reading: a gap, not a dip
+
+            if is_duration:
+                x_all = minutes
+                self.ax_temp.set_xlabel("Duration (min)", color="white")
+            else:
+                x_all = day_nums
+                self.ax_temp.set_xlabel("Time", color="white")
+
+            idx = plot_math.thin_indices(conds_drawn)  # long runs: thinned, keeping peaks and dips
+            marker = "o" if len(idx) <= 300 else None
+            x = x_all[idx]
+            self.ax.plot(x, conds_drawn[idx], marker=marker, markersize=4, linestyle="-", color="#3498db")
+
+            if win_min is not None:
+                xmax = x_all[-1]
+                self.ax.set_xlim(xmax - (win_min if is_duration else win_min / 1440.0), xmax)
 
             if not self.auto_cond_chk.isChecked():
                 try:
-                    cmin = float(self.ent_cond_min.text())
-                    cmax = float(self.ent_cond_max.text())
-                    self.ax.set_ylim(cmin, cmax)
-                except Exception:
+                    self.ax.set_ylim(float(self.ent_cond_min.text()), float(self.ent_cond_max.text()))
+                except ValueError:
                     pass
 
-            import math
+            good_t = ~np.isnan(temps[idx])
+            self.ax_temp.plot(
+                x[good_t], temps[idx][good_t], marker="s" if marker else None, markersize=3, color="#e74c3c"
+            )
 
-            valid_x = [x for x, y in zip(x_data, self.plot_temps, strict=False) if not math.isnan(y)]
-            valid_y = [y for y in self.plot_temps if not math.isnan(y)]
-            self.ax_temp.plot(valid_x, valid_y, marker="s", linestyle="-", color="#e74c3c", label="Temp")
-
-            # Calculate and plot derivative
-            if len(plot_y) > 1:
-                import numpy as np
-
-                y_arr = np.array(plot_y, dtype=float)
-                y_arr[y_arr <= 0] = 1e-9
-                log_y = np.log10(y_arr)
-                deriv = None
-
-                win_len = self.spin_deriv_smooth.value()
-                if len(log_y) > win_len:
-                    try:
-                        import scipy.signal
-
-                        deriv = scipy.signal.savgol_filter(log_y, window_length=win_len, polyorder=2, deriv=1)
-                    except Exception:
-                        pass
-                if deriv is None:
-                    deriv = np.gradient(log_y)
-                self.ax2.plot(x_data, deriv, color="#9b59b6", linestyle="-", alpha=0.6, label="d(log)/dt")
-
+            # Rate of change per minute (not per reading), so it doesn't depend on the sampling rate
+            if len(dates) > 1:
+                deriv = plot_math.derivative_per_minute(minutes, conds, self.spin_deriv_smooth.value())
+                self.ax2.plot(x, deriv[idx], color="#9b59b6", linestyle="-", alpha=0.6)
                 if not self.auto_deriv_chk.isChecked():
                     try:
-                        dmin = float(self.ent_deriv_min.text())
-                        dmax = float(self.ent_deriv_max.text())
-                        self.ax2.set_ylim(dmin, dmax)
-                    except Exception:
+                        self.ax2.set_ylim(float(self.ent_deriv_min.text()), float(self.ent_deriv_max.text()))
+                    except ValueError:
                         pass
 
             if not self.auto_temp_chk.isChecked():
                 try:
-                    tmin = float(self.ent_temp_min.text())
-                    tmax = float(self.ent_temp_max.text())
-                    self.ax_temp.set_ylim(tmin, tmax)
-                except Exception:
+                    self.ax_temp.set_ylim(float(self.ent_temp_min.text()), float(self.ent_temp_max.text()))
+                except ValueError:
                     pass
 
             if is_duration:
                 self.ax_temp.xaxis.set_major_formatter(ticker.ScalarFormatter())
                 self.fig.autofmt_xdate(rotation=0, ha="center")
             else:
+                self.ax_temp.xaxis.set_major_locator(mdates.AutoDateLocator())
                 self.ax_temp.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
                 self.fig.autofmt_xdate()
 
             # Hide x-axis labels on top plot
             plt.setp(self.ax.get_xticklabels(), visible=False)
+            self.ax.xaxis.get_offset_text().set_visible(False)  # e.g. "+2.07e4" for date numbers
             self.ax.set_xlabel("")
 
         self.fig.tight_layout()
         self.canvas.draw_idle()
 
+    # --- Meter commands -------------------------------------------------------------------
     def sync_time(self, checked=False):
         if self.is_connected and self.ser:
-            now = datetime.datetime.now()
             try:
-                packet = bytearray(
-                    [
-                        ord("&"),
-                        ord("D"),
-                        ord("T"),
-                        now.year - 2000,
-                        now.month,
-                        now.day,
-                        now.hour,
-                        now.minute,
-                        now.second,
-                        ord("#"),
-                    ]
-                )
-                packet.extend(b"\r\n")
-                self.ser.write(packet)
-            except Exception:
-                pass
+                self.ser.write(meter_protocol.set_clock_command(datetime.datetime.now()))
+                self.log_event("⏱️ Set the meter's clock to the computer's.")
+            except Exception as e:
+                log.warning("Meter %s: setting the clock failed: %s", self.meter_id, e)
+                self.log_event(f"❌ Couldn't set the meter's clock: {e}")
 
-    def download_memory(self, checked=False):
-        if not self.ser:
+    def download_memory(self, checked=False, automatic=False):
+        """Ask the meter for the readings stored in its memory and save them to an Excel file."""
+        if not (self.is_connected and self.ser) or self._memory is not None:
             return
-        self.set_status("Downloading Memory...", "gray")
+        self._memory = []
+        self._memory_auto = automatic
+        self._memory_started = self._memory_last = time.time()
         self.btn_download.setEnabled(False)
-        self.ser.write(b"&WA#\r\n")
-
-    def save_excel(self, auto=False, is_background_autosave=False):
-        if self.table.rowCount() == 0:
-            if not auto:
-                QMessageBox.information(self, "Export", "No data to export.")
+        self.set_status("Downloading memory...", "gray")
+        self.log_event("📥 Downloading the meter's memory" + (" (automatic)..." if automatic else "..."))
+        try:
+            self.ser.write(meter_protocol.DOWNLOAD_MEMORY)
+        except Exception as e:
+            self._finish_memory_download(error=str(e))
             return
+        self.memory_timer.start(1000)
 
-        use_global = self.chk_use_global_template.isChecked()
-        if use_global and self.app_controller:
+    def _on_memory_reading(self, reading):
+        if self._memory is None:
+            return
+        self._memory.append(reading)
+        self._memory_last = time.time()
+        if len(self._memory) % 25 == 0:
+            self.set_status(f"Downloading memory... {len(self._memory)} readings", "gray")
+
+    def _check_memory_download(self):
+        if self._memory is None:
+            self.memory_timer.stop()
+            return
+        now = time.time()
+        # Done when the readings stop for 3 s (or nothing came in 10 s).
+        if (self._memory and now - self._memory_last > 3) or (
+            not self._memory and now - self._memory_started > 10
+        ):
+            self._finish_memory_download()
+
+    def _finish_memory_download(self, error=None):
+        self.memory_timer.stop()
+        readings, self._memory = self._memory or [], None
+        automatic = self._memory_auto
+        if self.is_connected:
+            self.btn_download.setEnabled(True)
+        if error:
+            log.warning("Meter %s: memory download failed: %s", self.meter_id, error)
+            self.set_status("Memory download failed", "red")
+            self.log_event(f"❌ Memory download failed: {error}")
+            return
+        if not readings:
+            self.set_status(*self._connected_status())
+            self.log_event("📥 The meter sent no stored readings.")
+            if not automatic:
+                QMessageBox.information(self, "Download Raw Memory", "The meter sent no stored readings.")
+            return
+        signature = (len(readings), readings[-1].meter_time_text)
+        if automatic and signature == self._last_memory_signature:
+            self.set_status(*self._connected_status())
+            self.log_event("📥 The meter's memory hasn't changed since the last download; nothing saved.")
+            return
+        path = os.path.join(
+            self._save_folder(), f"Meter{self.meter_id}_Memory_{datetime.datetime.now():%Y-%m-%d_%H%M%S}.xlsx"
+        )
+        sn = self.sn_label.text().replace("SN: ", "")
+        try:
+            path = recording.save_with_fallback(
+                lambda p: recording.write_memory_excel(p, readings, self.meter_id, sn), path
+            )
+        except Exception as e:
+            log.exception("Meter %s: couldn't save the memory download", self.meter_id)
+            self.set_status("Saving the memory download failed", "red")
+            self.log_event(f"❌ Couldn't save the {len(readings)} stored readings: {e}")
+            if not automatic:
+                QMessageBox.critical(self, "Download Raw Memory", f"Couldn't save the readings:\n{e}")
+            return
+        self._last_memory_signature = signature
+        self.set_status(f"Saved {len(readings)} stored readings", "#27ae60")
+        self._restore_status_later()
+        self.log_event(f"📥 Saved {len(readings)} readings from the meter's memory to {path}.")
+        if not automatic:
+            QMessageBox.information(
+                self, "Download Raw Memory", f"Saved {len(readings)} stored readings to:\n{path}"
+            )
+
+    # --- Excel ----------------------------------------------------------------------------
+    def _save_folder(self):
+        """Where exports go: the global or this meter's save folder (relative = in the data folder)."""
+        if self.chk_use_global_template.isChecked() and self.app_controller:
+            folder = self.app_controller.shared_config.get("global_default_save_folder", "Data")
+        else:
+            folder = self.config.get(f"default_save_location_{self.meter_id}", "")
+        if folder in ("", "Not Set"):
+            folder = "Data"
+        if not os.path.isdir(folder) and not os.path.isabs(folder):
+            try:
+                os.makedirs(folder, exist_ok=True)  # e.g. "Data" in the data folder
+            except OSError:
+                pass
+        if not os.path.isdir(folder):
+            log.warning("Save folder %s doesn't exist; using Documents", folder)
+            folder = os.path.expanduser("~/Documents")
+        return os.path.abspath(folder)
+
+    def _template(self):
+        if self.chk_use_global_template.isChecked() and self.app_controller:
             template = self.app_controller.shared_config.get(
                 "global_filename_template", "<Meter ID>_<Date>_<Time>"
             )
-            docs = self.app_controller.shared_config.get("global_default_save_folder", "Data")
         else:
             template = self.ent_save_template.text()
-            docs = self.config.get(f"default_save_location_{self.meter_id}", "")
+        return template if template.strip() else "<Meter ID>_<Date>_<Time>"
 
-        if not template.strip():
-            template = "<Meter ID>_<Date>_<Time>"
-        filename = self.get_resolved_string(template)
-        if not filename.endswith(".xlsx"):
+    def _default_save_path(self):
+        filename = self.get_resolved_string(self._template())
+        if not filename.lower().endswith(".xlsx"):
             filename += ".xlsx"
+        return os.path.join(self._save_folder(), filename)
 
-        if not docs or not os.path.isdir(docs):
-            docs = os.path.expanduser("~/Documents")
-        filepath = os.path.join(docs, filename)
+    def _save_snapshot(self):
+        """Everything the Excel file needs, copied so a background save can't see later changes."""
+        return {
+            "records": list(self.records),
+            "meter_id": self.meter_id,
+            "serial_number": self.sn_label.text().replace("SN: ", ""),
+            "tokens": [(name, ent.text().strip()) for name, ent in getattr(self, "token_inputs", {}).items()],
+            "notes": self.txt_notes.toPlainText(),
+        }
 
-        if not auto:
+    @staticmethod
+    def _write_excel(path, snapshot):
+        return recording.save_with_fallback(lambda p: recording.write_excel(p, **snapshot), path)
+
+    def save_excel(self, auto=False, is_background_autosave=False, quiet=False):
+        """Save the readings to Excel. Returns True if saved (or a background save started).
+
+        auto=False: Export As (asks for a file). auto=True: Quick Save / auto-save, to this
+        session's auto-save file, whose name is fixed at its first save, so each save overwrites it
+        instead of making a new file. If that file is open in Excel, "<name> (2).xlsx" is used and
+        auto-save carries on there. Auto-saves run in the background; failures show in the status
+        bar, the event log and the error log.
+        """
+        if not self.records:
+            if not auto:
+                QMessageBox.information(self, "Export", "No data to export.")
+            return False
+
+        if auto:
+            if self.autosave_path is None:
+                self.autosave_path = self._default_save_path()
+            filepath = self.autosave_path
+        else:
             filepath, _ = QFileDialog.getSaveFileName(
-                self, "Export Excel", filepath, "Excel files (*.xlsx);;All files (*.*)"
+                self, "Export Excel", self._default_save_path(), "Excel files (*.xlsx);;All files (*.*)"
             )
             if not filepath:
-                return
+                return False
 
+        snapshot = self._save_snapshot()
+        if is_background_autosave:
+            if self._save_thread is not None and self._save_thread.is_alive():
+                return False  # the previous auto-save is still writing
+
+            def work():
+                try:
+                    written = self._write_excel(filepath, snapshot)
+                    self.signals.save_finished.emit(written, "", len(snapshot["records"]))
+                except Exception as e:
+                    log.exception("Meter %s: auto-save to %s failed", self.meter_id, filepath)
+                    self.signals.save_finished.emit(filepath, f"{type(e).__name__}: {e}", 0)
+
+            self._save_thread = threading.Thread(target=work, daemon=True)
+            self._save_thread.start()
+            return True
+
+        self.wait_for_background_save()
         try:
-            from openpyxl.utils.dataframe import dataframe_to_rows
-
-            data = []
-            for row in range(self.table.rowCount()):
-                row_data = []
-                for col in range(self.table.columnCount()):
-                    item = self.table.item(row, col)
-                    if item:
-                        text = item.text()
-
-                        # Convert to number so Excel recognizes it
-                        try:
-                            if "." in text:
-                                val = float(text)
-                            else:
-                                val = int(text)
-                            row_data.append(val)
-                        except ValueError:
-                            row_data.append(text)
-                    else:
-                        row_data.append("")
-                data.append(row_data)
-
-            df = pd.DataFrame(data, columns=self.columns)
-
-            wb = openpyxl.Workbook()
-
-            data_ws = wb.active
-            data_ws.title = "Data"
-            for r in dataframe_to_rows(df, index=False, header=True):
-                data_ws.append(r)
-
-            doc_ws = wb.create_sheet(title="Documentation")
-            doc_ws["A1"] = f"{self.meter_id} - Experiment Documentation"
-            doc_ws["A1"].font = Font(size=14, bold=True)
-            doc_ws["A3"] = "Export Date:"
-            doc_ws["B3"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            doc_ws["A4"] = "Meter SN:"
-            doc_ws["B4"] = self.sn_label.text().replace("SN: ", "")
-
-            current_row = 6
-            doc_ws.cell(row=current_row, column=1, value="Metadata Tokens").font = Font(bold=True)
-            current_row += 1
-            doc_ws.cell(row=current_row, column=1, value="Token Name").font = Font(bold=True, italic=True)
-            doc_ws.cell(row=current_row, column=2, value="Token Value").font = Font(bold=True, italic=True)
-            current_row += 1
-            if hasattr(self, "token_inputs"):
-                for name, ent in self.token_inputs.items():
-                    doc_ws.cell(row=current_row, column=1, value=name)
-                    token_text = ent.text().strip()
-                    try:
-                        if "." in token_text:
-                            token_val = float(token_text)
-                        else:
-                            token_val = int(token_text)
-                    except ValueError:
-                        token_val = token_text
-                    doc_ws.cell(row=current_row, column=2, value=token_val)
-                    current_row += 1
-
-            current_row += 1
-            doc_ws.cell(row=current_row, column=1, value="Experiment Notes:").font = Font(bold=True)
-            current_row += 1
-            doc_ws.cell(row=current_row, column=1, value=self.txt_notes.toPlainText()).alignment = Alignment(
-                wrap_text=True, vertical="top"
-            )
-            doc_ws.row_dimensions[current_row].height = 100
-
-            doc_ws.column_dimensions["A"].width = 25
-            doc_ws.column_dimensions["B"].width = 35
-
-            try:
-                from openpyxl.chart import ScatterChart, Reference, Series
-                from openpyxl.chart.axis import ChartLines
-
-                graph_ws = wb.create_sheet(title="Graph")
-
-                chart = ScatterChart()
-                chart.title = f"Meter {self.meter_id} Conductivity Over Time"
-                chart.style = 13
-                chart.x_axis.title = "Duration (min)"
-                chart.y_axis.title = "Conductivity (mS/cm)"
-                chart.y_axis.scaling.logBase = 10
-                chart.x_axis.majorGridlines = ChartLines()
-                chart.y_axis.majorGridlines = ChartLines()
-                chart.width = 22
-                chart.height = 12
-
-                max_row = len(data) + 1
-                if max_row > 1:
-                    xvalues = Reference(data_ws, min_col=2, min_row=2, max_row=max_row)
-                    values = Reference(data_ws, min_col=5, min_row=1, max_row=max_row)
-                    series = Series(values, xvalues, title_from_data=True)
-                    chart.series.append(series)
-                    graph_ws.add_chart(chart, "A1")
-            except Exception as e:
-                print(f"Failed to generate graph sheet: {e}")
-
-            wb.save(filepath)
-            self.set_status("Exported to Excel!", "#27ae60")
-            from PyQt6.QtCore import QTimer
-
-            QTimer.singleShot(
-                3000,
-                lambda: self.set_status(
-                    "Receiving Data..." if getattr(self, "is_recording", False) else "Connected", "#27ae60"
-                ),
-            )
-            self.unsaved_changes = False
-
-            # Show success prompt as requested by user
-            if not is_background_autosave:
-                QMessageBox.information(self, "Save Successful", f"File successfully saved to:\n{filepath}")
+            written = self._write_excel(filepath, snapshot)
         except Exception as e:
-            try:
-                with open(os.path.expanduser("~/autosave_error.log"), "a") as f:
-                    import traceback
+            log.exception("Meter %s: saving %s failed", self.meter_id, filepath)
+            self._save_failed(filepath, f"{type(e).__name__}: {e}", show_dialog=not quiet)
+            return False
+        self._saved(written, len(snapshot["records"]), is_autosave_file=auto)
+        if not quiet:
+            QMessageBox.information(self, "Save Successful", f"File successfully saved to:\n{written}")
+        return True
 
-                    f.write(f"{datetime.datetime.now()}: {str(e)}\n{traceback.format_exc()}\n")
-            except Exception:
-                pass
-            if not auto:
-                QMessageBox.critical(self, "Error", f"Export failed! {e}")
+    def wait_for_background_save(self, timeout=60):
+        if self._save_thread is not None and self._save_thread.is_alive():
+            self._save_thread.join(timeout)
+
+    def _on_save_finished(self, path, error, n_rows):
+        if error:
+            self._save_failed(path, error, show_dialog=False)
+        else:
+            self._saved(path, n_rows, is_autosave_file=True)
+
+    def _saved(self, written, n_rows, is_autosave_file):
+        if is_autosave_file and self.autosave_path and written != self.autosave_path:
+            self.log_event(
+                f"⚠️ {os.path.basename(self.autosave_path)} couldn't be written (open in Excel?), so "
+                f"the data went to {os.path.basename(written)}. Auto-save carries on there."
+            )
+            self.autosave_path = written
+        if n_rows >= len(self.records):
+            self.unsaved_changes = False
+        self.set_status(f"Saved {os.path.basename(written)}", "#27ae60")
+        self._restore_status_later(3000)
+        self.log_event(f"💾 Saved {n_rows} readings to {written}")
+
+    def _save_failed(self, path, error, show_dialog):
+        msg = f"Saving {os.path.basename(path)} failed: {error}"
+        self.set_status("Save failed! See the event log", "red")
+        self.log_event(f"❌ {msg}")
+        if self.is_recording:
+            self._send_status_alert(f"❌ **Meter {self.meter_id}**: {msg}")
+        if show_dialog:
+            QMessageBox.critical(self, "Error", f"Export failed!\n\n{msg}")
 
 
 class SettingsTab(QWidget):
@@ -2193,7 +2447,7 @@ class SettingsTab(QWidget):
                 APP_DIR,
                 DATA_DIR,
                 SETTINGS_FILES,
-                save_cb=self.parent_app.meter1.save_config,
+                save_cb=lambda: self.parent_app.save_shared_config(now=True),
                 restart_cb=self.parent_app.restart_app,
             )
         )
@@ -2286,7 +2540,11 @@ class SettingsTab(QWidget):
         l_save_inner.addLayout(grid_buttons)
 
         self.auto_sync_chk = QCheckBox("Auto-Sync Time on Connect (All Meters)")
-        self.auto_sync_chk.setChecked(self.parent_app.meter1.config.get("global_auto_sync", False))
+        self.auto_sync_chk.setToolTip(
+            "Set each meter's clock to the computer's when it connects (the log itself always uses "
+            "the computer's clock; the meter's is kept in the Meter Clock column)"
+        )
+        self.auto_sync_chk.setChecked(self.parent_app.meter1.config.get("global_auto_sync", True))
         l_save_inner.addWidget(self.auto_sync_chk)
         l_global.addWidget(gb_save)
 
@@ -2295,135 +2553,145 @@ class SettingsTab(QWidget):
         self.sidebar.addItem("🌍 General")
         self.stack.addWidget(page_global)
 
-        # 2. Meter 1 Settings
-        page_m1 = QWidget()
-        l_m1 = QFormLayout(page_m1)
-        self.lbl_dir1 = QLabel(self.parent_app.meter1.config.get("default_save_location_1", "Not Set"))
-        btn_dir1 = QPushButton("Browse...")
-        btn_dir1.clicked.connect(lambda checked=False: self.choose_meter_dir(1, self.lbl_dir1))
-        d1 = QHBoxLayout()
-        d1.addWidget(self.lbl_dir1)
-        d1.addWidget(btn_dir1)
-        l_m1.addRow("Meter 1 Save Directory:", d1)
-        self.ka1_chk = QCheckBox("Enable Keep-Alive (Ping every 2s)")
-        self.ka1_chk.setChecked(self.parent_app.meter1.config.get("keep_alive_1", True))
-        l_m1.addRow("", self.ka1_chk)
-
-        self.al1_chk = QCheckBox("Enable Discord Alerts")
-        self.al1_chk.setChecked(self.parent_app.meter1.config.get("alert_enabled_1", False))
-        self.al1_web = QLineEdit(self.parent_app.meter1.config.get("alert_webhook_1", ""))
-        self.al1_thr = QLineEdit(str(self.parent_app.meter1.config.get("alert_threshold_1", "0.5")))
-        self.al1_cool = QLineEdit(str(self.parent_app.meter1.config.get("alert_cooldown_1", "5.0")))
-        self.al1_del = QLineEdit(str(self.parent_app.meter1.config.get("alert_delay_1", "5.0")))
-        btn_test1 = QPushButton("Test Webhook")
-        btn_test1.clicked.connect(self.parent_app.meter1.test_discord_alert)
-        l_m1.addRow("", self.al1_chk)
-        l_m1.addRow("Discord Webhook URL:", self.al1_web)
-        l_m1.addRow("Log Change Threshold:", self.al1_thr)
-        l_m1.addRow("Baseline Delay (Minutes):", self.al1_del)
-        l_m1.addRow("Cooldown (Minutes):", self.al1_cool)
-        l_m1.addRow("", btn_test1)
-
-        self.sidebar.addItem("📈 Meter 1 Settings")
-        self.stack.addWidget(page_m1)
-
-        # 3. Meter 2 Settings
-        page_m2 = QWidget()
-        l_m2 = QFormLayout(page_m2)
-        self.lbl_dir2 = QLabel(self.parent_app.meter2.config.get("default_save_location_2", "Not Set"))
-        btn_dir2 = QPushButton("Browse...")
-        btn_dir2.clicked.connect(lambda checked=False: self.choose_meter_dir(2, self.lbl_dir2))
-        d2 = QHBoxLayout()
-        d2.addWidget(self.lbl_dir2)
-        d2.addWidget(btn_dir2)
-        l_m2.addRow("Meter 2 Save Directory:", d2)
-        self.ka2_chk = QCheckBox("Enable Keep-Alive (Ping every 2s)")
-        self.ka2_chk.setChecked(self.parent_app.meter2.config.get("keep_alive_2", True))
-        l_m2.addRow("", self.ka2_chk)
-
-        self.al2_chk = QCheckBox("Enable Discord Alerts")
-        self.al2_chk.setChecked(self.parent_app.meter2.config.get("alert_enabled_2", False))
-        self.al2_web = QLineEdit(self.parent_app.meter2.config.get("alert_webhook_2", ""))
-        self.al2_thr = QLineEdit(str(self.parent_app.meter2.config.get("alert_threshold_2", "0.5")))
-        self.al2_cool = QLineEdit(str(self.parent_app.meter2.config.get("alert_cooldown_2", "5.0")))
-        self.al2_del = QLineEdit(str(self.parent_app.meter2.config.get("alert_delay_2", "5.0")))
-        btn_test2 = QPushButton("Test Webhook")
-        btn_test2.clicked.connect(self.parent_app.meter2.test_discord_alert)
-        l_m2.addRow("", self.al2_chk)
-        l_m2.addRow("Discord Webhook URL:", self.al2_web)
-        l_m2.addRow("Log Change Threshold:", self.al2_thr)
-        l_m2.addRow("Baseline Delay (Minutes):", self.al2_del)
-        l_m2.addRow("Cooldown (Minutes):", self.al2_cool)
-        l_m2.addRow("", btn_test2)
-
-        self.sidebar.addItem("📉 Meter 2 Settings")
-        self.stack.addWidget(page_m2)
+        # 2. and 3. Meter settings
+        self.meter_fields = {}
+        for meter in (self.parent_app.meter1, self.parent_app.meter2):
+            page, fields = self._meter_page(meter)
+            self.meter_fields[meter.meter_id] = fields
+            icon = "📈" if meter.meter_id == 1 else "📉"
+            self.sidebar.addItem(f"{icon} Meter {meter.meter_id} Settings")
+            self.stack.addWidget(page)
+        # Old names, kept for anything that still uses them
+        f1, f2 = self.meter_fields[1], self.meter_fields[2]
+        self.lbl_dir1, self.ka1_chk, self.al1_chk, self.al1_web = f1["dir"], f1["ka"], f1["alert"], f1["web"]
+        self.lbl_dir2, self.ka2_chk, self.al2_chk, self.al2_web = f2["dir"], f2["ka"], f2["alert"], f2["web"]
 
         self.sidebar.currentRowChanged.connect(self.stack.setCurrentIndex)
 
-        # Save Button at the bottom of the right side layout
-        btn_save = QPushButton("💾 Save All Settings")
-        btn_save.setStyleSheet(
-            "background-color: #3498db; color: white; padding: 12px; font-size: 14px; font-weight: bold;"
-        )
-        btn_save.clicked.connect(self.save_all)
-        right_layout.addWidget(btn_save)
-
+        # Every change is saved as it's made (it used to wait for a "Save All Settings" click and
+        # was lost when you didn't).
+        hint = QLabel("Changes are saved as you make them.")
+        hint.setStyleSheet("color: #9aa0a6; padding: 6px;")
+        right_layout.addWidget(hint)
         main_layout.addLayout(right_layout)
+
+        self.combo_style.currentTextChanged.connect(self.save_all)
+        self.ent_template.textChanged.connect(self.save_all)
+        self.auto_sync_chk.toggled.connect(self.save_all)
+        for fields in self.meter_fields.values():
+            for key in ("ka", "alert", "conn_alert", "dump"):
+                fields[key].toggled.connect(self.save_all)
+            for key in ("web", "thr", "cool", "delay"):
+                fields[key].textChanged.connect(self.save_all)
+            for key in ("stall", "dump_hrs"):
+                fields[key].valueChanged.connect(self.save_all)
+
+    def _meter_page(self, meter):
+        mid = meter.meter_id
+        cfg = meter.config
+        page = QWidget()
+        form = QFormLayout(page)
+        f = {}
+        saved_dir = cfg.get(f"default_save_location_{mid}", "") or ""
+        f["dir"] = QLabel(saved_dir if saved_dir and saved_dir != "Not Set" else "Not Set")
+        btn_dir = QPushButton("Browse...")
+        btn_dir.clicked.connect(lambda checked=False, lbl=f["dir"], m=mid: self.choose_meter_dir(m, lbl))
+        row = QHBoxLayout()
+        row.addWidget(f["dir"])
+        row.addWidget(btn_dir)
+        form.addRow(f"Meter {mid} Save Directory:", row)
+
+        f["ka"] = QCheckBox("Enable Keep-Alive (Ping every 2s)")
+        f["ka"].setChecked(cfg.get(f"keep_alive_{mid}", True))
+        form.addRow("", f["ka"])
+
+        f["dump"] = QCheckBox("Download the meter's memory to Excel every")
+        f["dump"].setToolTip("Saves Meter<N>_Memory_<date>.xlsx in the save folder (not if nothing changed)")
+        f["dump"].setChecked(bool(cfg.get(f"auto_dump_enabled_{mid}", False)))
+        f["dump_hrs"] = QDoubleSpinBox()
+        f["dump_hrs"].setRange(0.25, 168.0)
+        f["dump_hrs"].setDecimals(2)
+        f["dump_hrs"].setSuffix(" h")
+        try:
+            f["dump_hrs"].setValue(float(cfg.get(f"default_auto_dump_hrs_{mid}", 2.0)))
+        except (TypeError, ValueError):
+            f["dump_hrs"].setValue(2.0)
+        dump_row = QHBoxLayout()
+        dump_row.addWidget(f["dump"])
+        dump_row.addWidget(f["dump_hrs"])
+        dump_row.addStretch()
+        form.addRow("", dump_row)
+
+        f["alert"] = QCheckBox("Enable Discord Alerts")
+        f["alert"].setChecked(cfg.get(f"alert_enabled_{mid}", False))
+        f["web"] = QLineEdit(cfg.get(f"alert_webhook_{mid}", ""))
+        f["thr"] = QLineEdit(str(cfg.get(f"alert_threshold_{mid}", "0.5")))
+        f["cool"] = QLineEdit(str(cfg.get(f"alert_cooldown_{mid}", "5.0")))
+        f["delay"] = QLineEdit(str(cfg.get(f"alert_delay_{mid}", "5.0")))
+        f["conn_alert"] = QCheckBox("Also alert when the connection drops, readings stop or a save fails")
+        f["conn_alert"].setChecked(cfg.get(f"alert_connection_{mid}", True))
+        f["stall"] = QSpinBox()
+        f["stall"].setRange(0, 3600)
+        f["stall"].setSuffix(" s")
+        f["stall"].setSpecialValueText("Off")
+        f["stall"].setMaximumWidth(140)
+        f["stall"].setToolTip("While recording: warn when no reading has arrived for this long (0 = off)")
+        try:
+            f["stall"].setValue(int(float(cfg.get(f"stall_alert_s_{mid}", 60))))
+        except (TypeError, ValueError):
+            f["stall"].setValue(60)
+        btn_test = QPushButton("Test Webhook")
+        btn_test.clicked.connect(meter.test_discord_alert)
+        form.addRow("", f["alert"])
+        form.addRow("Discord Webhook URL:", f["web"])
+        form.addRow("Log Change Threshold:", f["thr"])
+        form.addRow("Baseline Delay (Minutes):", f["delay"])
+        form.addRow("Cooldown (Minutes):", f["cool"])
+        form.addRow("", f["conn_alert"])
+        form.addRow("No-reading warning after:", f["stall"])
+        form.addRow("", btn_test)
+        return page, f
 
     def choose_global_dir(self, checked=False):
         d = QFileDialog.getExistingDirectory(self, "Select Global Directory")
         if d:
-            self.lbl_folder.setText(d)
+            self.lbl_folder.setText(settings_location.portable(d, DATA_DIR))
+            self.save_all()
 
     def choose_meter_dir(self, meter_id, lbl):
         d = QFileDialog.getExistingDirectory(self, f"Select Directory for Meter {meter_id}")
         if d:
-            lbl.setText(d)
+            lbl.setText(settings_location.portable(d, DATA_DIR))
+            self.save_all()
 
-    def save_all(self, checked=False):
-        # Meter 1 config
-        c1 = self.parent_app.meter1.config
-        c1["global_default_save_folder"] = self.lbl_folder.text()
-        c1["global_filename_template"] = self.ent_template.text()
-        c1["global_auto_sync"] = self.auto_sync_chk.isChecked()
-        c1["default_save_location_1"] = self.lbl_dir1.text()
-        c1["keep_alive_1"] = self.ka1_chk.isChecked()
-        c1["alert_enabled_1"] = self.al1_chk.isChecked()
-        c1["alert_webhook_1"] = self.al1_web.text()
-        c1["alert_threshold_1"] = self.al1_thr.text()
-        c1["alert_delay_1"] = self.al1_del.text()
-        c1["alert_cooldown_1"] = self.al1_cool.text()
-
-        # Meter 2 config
-        c2 = self.parent_app.meter2.config
-        c2["global_default_save_folder"] = self.lbl_folder.text()
-        c2["global_filename_template"] = self.ent_template.text()
-        c2["global_auto_sync"] = self.auto_sync_chk.isChecked()
-        c2["default_save_location_2"] = self.lbl_dir2.text()
-        c2["keep_alive_2"] = self.ka2_chk.isChecked()
-        c2["alert_enabled_2"] = self.al2_chk.isChecked()
-        c2["alert_webhook_2"] = self.al2_web.text()
-        c2["alert_threshold_2"] = self.al2_thr.text()
-        c2["alert_delay_2"] = self.al2_del.text()
-        c2["alert_cooldown_2"] = self.al2_cool.text()
+    def save_all(self, *args):
+        """Copy the Settings tab into the shared settings and save them (called on every change)."""
+        app = self.parent_app
+        shared = app.meter1.config  # one dict, shared by both meters and the app
+        shared["global_default_save_folder"] = self.lbl_folder.text()
+        shared["global_filename_template"] = self.ent_template.text()
+        shared["global_auto_sync"] = self.auto_sync_chk.isChecked()
+        for mid, f in self.meter_fields.items():
+            folder = f["dir"].text()
+            shared[f"default_save_location_{mid}"] = "" if folder == "Not Set" else folder
+            shared[f"keep_alive_{mid}"] = f["ka"].isChecked()
+            shared[f"auto_dump_enabled_{mid}"] = f["dump"].isChecked()
+            shared[f"default_auto_dump_hrs_{mid}"] = f["dump_hrs"].value()
+            shared[f"alert_enabled_{mid}"] = f["alert"].isChecked()
+            shared[f"alert_webhook_{mid}"] = f["web"].text().strip()
+            shared[f"alert_threshold_{mid}"] = f["thr"].text()
+            shared[f"alert_delay_{mid}"] = f["delay"].text()
+            shared[f"alert_cooldown_{mid}"] = f["cool"].text()
+            shared[f"alert_connection_{mid}"] = f["conn_alert"].isChecked()
+            shared[f"stall_alert_s_{mid}"] = f["stall"].value()
 
         style = self.combo_style.currentText()
-        c1["button_style"] = style
-        c2["button_style"] = style
-        self.parent_app.meter1.update_button_styles(style)
-        self.parent_app.meter2.update_button_styles(style)
-
-        # Sync UI template
-        if self.parent_app.meter1.chk_use_global_template.isChecked():
-            self.parent_app.meter1.ent_save_template.setText(self.ent_template.text())
-        if self.parent_app.meter2.chk_use_global_template.isChecked():
-            self.parent_app.meter2.ent_save_template.setText(self.ent_template.text())
-
-        self.parent_app.meter1.save_config()
-        self.parent_app.meter2.save_config()
-
-        QMessageBox.information(self, "Success", "All settings saved successfully.")
+        shared["button_style"] = style
+        for meter in (app.meter1, app.meter2):
+            meter.update_button_styles(style)
+            if meter.chk_use_global_template.isChecked():
+                meter.ent_save_template.setText(self.ent_template.text())
+        app.save_shared_config()
 
 
 from PyQt6.QtCore import pyqtSignal
@@ -2929,22 +3197,25 @@ class MeterApp(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        import os
-        import json
-
         self.setWindowTitle(f"Apera Meter GUI {__version__}")
         self.resize(1400, 800)
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet("QTabBar::tab { padding: 6px 16px; }")
 
         self.config_path = os.path.join(CONFIG_DIR, "config.json")
-        self.shared_config = {}
-        if os.path.exists(self.config_path):
-            try:
-                with open(self.config_path) as f:
-                    self.shared_config = json.load(f)
-            except Exception:
-                pass
+        # An unreadable config.json (half-written, sync conflict) is moved aside and the last good
+        # copy used, with a warning once the window is up; it used to fall back to defaults silently.
+        self.shared_config, self.config_problem = recording.load_json(self.config_path)
+        self._config_warning_timer = QTimer(self)
+        self._config_warning_timer.setSingleShot(True)
+        self._config_warning_timer.timeout.connect(self._warn_config_problem)
+        if self.config_problem:
+            self._config_warning_timer.start(1500)
+        self.local_state = recording.load_local_state(LOCAL_STATE_PATH)  # this computer only
+        self._config_timer = QTimer(self)
+        self._config_timer.setSingleShot(True)
+        self._config_timer.setInterval(1000)
+        self._config_timer.timeout.connect(lambda: self.save_shared_config(now=True))
 
         # Instantiate buttons without placing them in the global toolbar
         self.ocr_checkbox = QPushButton("🎥 Turn Camera On")
@@ -3058,14 +3329,14 @@ class MeterApp(QMainWindow):
         self.chk_apply_lag.setChecked(self.shared_config.get("apply_hardware_lag", True))
         self.chk_apply_lag.setStyleSheet("color: #34495E; font-size: 13px; margin-left: 20px;")
         self.chk_apply_lag.stateChanged.connect(
-            lambda s: self.shared_config.update({"apply_hardware_lag": bool(s)})
+            lambda s: (self.shared_config.update({"apply_hardware_lag": bool(s)}), self.save_shared_config())
         )
 
         self.chk_burst_on_snap = QCheckBox("Capture 30-Frame Burst on Armed Capture")
         self.chk_burst_on_snap.setChecked(self.shared_config.get("burst_on_snap", False))
         self.chk_burst_on_snap.setStyleSheet("color: #8E44AD; font-size: 13px; margin-left: 20px;")
         self.chk_burst_on_snap.stateChanged.connect(
-            lambda s: self.shared_config.update({"burst_on_snap": bool(s)})
+            lambda s: (self.shared_config.update({"burst_on_snap": bool(s)}), self.save_shared_config())
         )
 
         from ocr_pipeline import MeterOCR
@@ -3216,40 +3487,71 @@ class MeterApp(QMainWindow):
         if self.ocr_autostart_chk.isChecked():
             QTimer.singleShot(2500, lambda: self.ocr_checkbox.setChecked(True))
 
+        self._restore_layout()
+
+    # --- Settings ------------------------------------------------------------------------------
+    def save_shared_config(self, now=False):
+        """Save config.json: a second after the last change, or at once with now=True.
+
+        Written atomically with a .bak copy, and only when something changed, so typing in a box
+        doesn't rewrite the file (in a folder SyncThing shares) on every keystroke.
+        """
+        if not now:
+            self._config_timer.start()
+            return
+        self._config_timer.stop()
         try:
-            if "app_geometry" in self.meter1.config:
-                from PyQt6.QtCore import QByteArray
+            recording.write_json_atomic(self.config_path, self.shared_config)
+        except (OSError, TypeError, ValueError) as e:
+            log.exception("Couldn't save the settings to %s", self.config_path)
+            if not getattr(self, "_config_save_warned", False):
+                self._config_save_warned = True
+                self.statusBar().showMessage(f"Couldn't save the settings: {e}", 15000)
 
-                self.restoreGeometry(QByteArray.fromHex(self.meter1.config["app_geometry"].encode()))
+    def save_local_state(self):
+        recording.save_local_state(LOCAL_STATE_PATH, self.local_state)
 
-            if "app_tab" in self.meter1.config:
-                self.tabs.setCurrentIndex(self.meter1.config["app_tab"])
+    def _warn_config_problem(self):
+        QMessageBox.warning(self, "Settings", f"{self.config_problem}\n\nSettings folder: {CONFIG_DIR}")
 
-            widths1 = self.meter1.config.get(f"col_widths_{self.meter1.meter_id}")
-            if widths1:
-                for i, w in enumerate(widths1):
-                    self.meter1.table.setColumnWidth(i, w)
+    def _layout_value(self, key):
+        """A window-layout value: this computer's, else the one older versions kept in config.json."""
+        layout = self.local_state.get("layout", {})
+        return layout[key] if key in layout else self.shared_config.get(key)
 
-            widths2 = self.meter1.config.get(f"col_widths_{self.meter2.meter_id}")
-            if widths2:
-                for i, w in enumerate(widths2):
-                    self.meter2.table.setColumnWidth(i, w)
+    def _restore_layout(self):
+        from PyQt6.QtCore import QByteArray
 
-            state1_main = self.meter1.config.get(f"main_splitter_{self.meter1.meter_id}")
-            if state1_main:
-                self.meter1.main_splitter.restoreState(QByteArray.fromHex(state1_main.encode()))
-            state1_mid = self.meter1.config.get(f"mid_splitter_{self.meter1.meter_id}")
-            if state1_mid:
-                self.meter1.mid_splitter.restoreState(QByteArray.fromHex(state1_mid.encode()))
-
-            state2_main = self.meter1.config.get(f"main_splitter_{self.meter2.meter_id}")
-            if state2_main:
-                self.meter2.main_splitter.restoreState(QByteArray.fromHex(state2_main.encode()))
-            state2_mid = self.meter1.config.get(f"mid_splitter_{self.meter2.meter_id}")
-            if state2_mid:
-                self.meter2.mid_splitter.restoreState(QByteArray.fromHex(state2_mid.encode()))
+        try:
+            geometry = self._layout_value("app_geometry")
+            if geometry:
+                self.restoreGeometry(QByteArray.fromHex(geometry.encode()))
+            tab = self._layout_value("app_tab")
+            if isinstance(tab, int):
+                self.tabs.setCurrentIndex(tab)
+            for meter in (self.meter1, self.meter2):
+                mid = meter.meter_id
+                for i, w in enumerate(self._layout_value(f"col_widths_{mid}") or []):
+                    meter.table.setColumnWidth(i, w)
+                for name, splitter in (("main", meter.main_splitter), ("mid", meter.mid_splitter)):
+                    state = self._layout_value(f"{name}_splitter_{mid}")
+                    if state:
+                        splitter.restoreState(QByteArray.fromHex(state.encode()))
         except Exception:
-            pass
+            log.warning("Couldn't restore the window layout", exc_info=True)
+
+    def _remember_layout(self):
+        """Window size and dividers, kept per computer (a Mac's layout doesn't fit the lab PC)."""
+        layout = self.local_state.setdefault("layout", {})
+        layout["app_geometry"] = self.saveGeometry().toHex().data().decode()
+        layout["app_tab"] = self.tabs.currentIndex()
+        for meter in (self.meter1, self.meter2):
+            mid = meter.meter_id
+            table = meter.table
+            layout[f"col_widths_{mid}"] = [table.columnWidth(i) for i in range(table.columnCount())]
+            layout[f"main_splitter_{mid}"] = meter.main_splitter.saveState().toHex().data().decode()
+            layout[f"mid_splitter_{mid}"] = meter.mid_splitter.saveState().toHex().data().decode()
+        self.save_local_state()
 
     # --- Desktop shortcut ----------------------------------------------------
     def create_desktop_shortcut(self, checked=False):
@@ -3308,7 +3610,7 @@ class MeterApp(QMainWindow):
 
                 shortcuts.refresh_existing_shortcut(script_dir)
             except Exception as e:
-                print(f"Couldn't refresh the desktop shortcut: {e}")
+                log.warning("Couldn't refresh the desktop shortcut: %s", e)
 
         threading.Thread(target=refresh_shortcut, daemon=True).start()
 
@@ -3318,7 +3620,7 @@ class MeterApp(QMainWindow):
 
     def set_update_check_on_start(self, on):
         self.meter1.config["check_updates_on_start"] = bool(on)
-        self.meter1.save_config()
+        self.save_shared_config(now=True)
 
     def _automatic_update_check(self):
         """The quiet check a few seconds after start and once a day; skipped when turned off."""
@@ -3509,7 +3811,10 @@ class MeterApp(QMainWindow):
         for meter in (self.meter1, self.meter2):
             ser = meter.ser
             if meter.is_connected and ser is not None:
-                state = f"connected on {ser.port}"
+                state = "connected" if meter._confirmed else "waiting for a reply"
+                state += f" on {ser.port}"
+            elif meter._reconnect_port:
+                state = f"connection lost, reconnecting to {meter._reconnect_port}"
             else:
                 state = f"not connected (port: {meter.port_combo.currentText() or 'none'})"
             model = meter.model_label.text().removeprefix("Model: ")
@@ -3517,10 +3822,15 @@ class MeterApp(QMainWindow):
                 state += f", model {model}"
             if meter.is_recording:
                 state += ", recording"
+            if meter.records:
+                state += f", {len(meter.records)} readings" + (" (unsaved)" if meter.unsaved_changes else "")
             extra[f"Meter {meter.meter_id}"] = state
+            files = [os.path.basename(p) for p in (meter.autosave_path, meter.backup_path) if p]
+            if files:
+                extra[f"Meter {meter.meter_id} files"] = ", ".join(files)
         ocr = getattr(self, "ocr_pipeline", None)
         extra["OCR model"] = "loaded" if getattr(ocr, "model", None) is not None else "not loaded"
-        output_log = os.path.join(DATA_DIR, "app.log")
+        output_log = os.path.join(LOG_DIR, "app.log")
         if os.path.exists(output_log):
             extra["Output log"] = output_log
         return extra
@@ -3562,8 +3872,6 @@ class MeterApp(QMainWindow):
         self.ocr_pipeline.min_confidence = self.ocr_conf_spin.value()
 
     def _save_ocr_config(self):
-        import json
-
         self.shared_config["ocr_autolog"] = self.ocr_autolog_checkbox.isChecked()
         self.shared_config["ocr_warn_streams"] = self.ocr_warn_streams_chk.isChecked()
         self.shared_config["ocr_auto_start"] = self.ocr_autostart_chk.isChecked()
@@ -3580,11 +3888,7 @@ class MeterApp(QMainWindow):
         self.shared_config["ocr_phys_max_spin"] = self.ocr_phys_max_spin.value()
 
         self._apply_ocr_settings()
-        try:
-            with open(self.config_path, "w") as f:
-                json.dump(self.shared_config, f, indent=4)
-        except Exception:
-            pass
+        self.save_shared_config()
 
     def _on_record_toggled(self):
         if not getattr(self, "ocr_warn_streams_chk", None) or not self.ocr_warn_streams_chk.isChecked():
@@ -3606,41 +3910,39 @@ class MeterApp(QMainWindow):
             self._warning_timer_active = False
 
     def _check_streams_active(self):
-        self._warning_timer_active = False
-        m1_rec = self.meter1.is_recording if hasattr(self, "meter1") else False
-        m2_rec = self.meter2.is_recording if hasattr(self, "meter2") else False
+        """15 s after a run starts: warn about streams that look forgotten.
 
-        if not m1_rec and not m2_rec:
+        Only streams that are in use are checked: a recording meter without its serial
+        connection, a connected meter that isn't recording, and the camera when a reading area is
+        drawn for a recording meter but the camera is off. A meter that is neither connected nor
+        recording is taken as unused (it used to be listed every time, with the camera).
+        """
+        self._warning_timer_active = False
+        meters = [m for m in (getattr(self, "meter1", None), getattr(self, "meter2", None)) if m is not None]
+        recording_meters = [m for m in meters if m.is_recording]
+        if not recording_meters:
             return  # User stopped recording before timer fired
 
         missing = []
-        if not self.ocr_checkbox.isChecked():
+        rois = getattr(getattr(self, "ocr_pipeline", None), "rois", {}) or {}
+        camera_needed = any(rois.get(f"m{m.meter_id}_cond") for m in recording_meters)
+        if camera_needed and not self.ocr_checkbox.isChecked():
             missing.append("OCR Camera (Turn Camera On)")
-
-        m1_conn = self.meter1.is_connected if hasattr(self, "meter1") else False
-        m2_conn = self.meter2.is_connected if hasattr(self, "meter2") else False
-
-        if not m1_conn:
-            missing.append("Meter 1 Serial Connection (Disconnected)")
-        if not m1_rec:
-            missing.append("Meter 1 Recording Toggle (Rec M1)")
-
-        if not m2_conn:
-            missing.append("Meter 2 Serial Connection (Disconnected)")
-        if not m2_rec:
-            missing.append("Meter 2 Recording Toggle (Rec M2)")
+        for m in meters:
+            if m.is_recording and not m.is_connected:
+                missing.append(f"Meter {m.meter_id} Serial Connection (Disconnected)")
+            elif m.is_connected and not m.is_recording:
+                missing.append(f"Meter {m.meter_id} Recording Toggle (Rec M{m.meter_id})")
 
         if missing:
-            from PyQt6.QtWidgets import QMessageBox
-
             QMessageBox.warning(
                 self,
                 "Missing Data Streams Warning",
                 "You have started recording a run, but the following streams are offline "
                 "or not recording:\n\n"
                 + "\n".join([f"- {m}" for m in missing])
-                + "\n\nIf you intended to record all of them, please enable them now "
-                "to prevent unit logic lock-outs.",
+                + "\n\nIf you intended to record all of them, please enable them now. "
+                "(This check can be turned off on the Live OCR Feed tab.)",
             )
 
     def set_ocr_status(self, text, color):
@@ -3983,48 +4285,65 @@ class MeterApp(QMainWindow):
             used.append(self.meter2.ser.port)
         return used
 
+    def _close_choice(self, lines):
+        """Ask how to close with unsaved data: 'save', 'close' or 'cancel'."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Unsaved Data")
+        box.setText("Close the app?\n\n" + "\n".join(lines))
+        box.setInformativeText(
+            "Save and Close writes each meter's readings to its auto-save file in the save folder. "
+            "Readings are also in the crash-recovery backup (Recover Session)."
+        )
+        save_btn = box.addButton("Save and Close", QMessageBox.ButtonRole.AcceptRole)
+        close_btn = box.addButton("Close Without Saving", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(save_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is save_btn:
+            return "save"
+        if clicked is close_btn:
+            return "close"
+        return "cancel"
+
     def closeEvent(self, event):
-        if self.meter1.unsaved_changes or self.meter2.unsaved_changes:
-            reply = QMessageBox.question(
-                self,
-                "Unsaved Data",
-                "You have unsaved experimental data!\nAre you sure you want to close?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply == QMessageBox.StandardButton.No:
+        meters = (self.meter1, self.meter2)
+        unsaved = [m for m in meters if m.unsaved_changes and m.records]
+        busy = [m for m in meters if m.is_recording]
+        if unsaved or busy:
+            lines = []
+            for m in meters:
+                if m.is_recording or (m.unsaved_changes and m.records):
+                    state = "is recording" if m.is_recording else "has readings that aren't saved"
+                    lines.append(f"- Meter {m.meter_id} {state} ({len(m.records)} readings)")
+            choice = self._close_choice(lines)
+            if choice == "cancel":
                 event.ignore()
                 return
+            if choice == "save":
+                for m in unsaved:
+                    if not m.save_excel(auto=True, quiet=True):
+                        QMessageBox.critical(
+                            self,
+                            "Unsaved Data",
+                            f"Meter {m.meter_id}'s readings couldn't be saved (see its event log), so the "
+                            "app stays open. Use Export As to save them somewhere else.",
+                        )
+                        event.ignore()
+                        return
 
-        self.meter1.disconnect_meter()
-        self.meter2.disconnect_meter()
+        self._config_warning_timer.stop()
+        for m in meters:
+            m.wait_for_background_save(timeout=30)
+            m.disconnect_meter()
+            m.housekeeping_timer.stop()
 
         try:
-            self.meter1.config["app_geometry"] = self.saveGeometry().toHex().data().decode()
-            self.meter1.config["app_tab"] = self.tabs.currentIndex()
-            self.meter1.config[f"col_widths_{self.meter1.meter_id}"] = [
-                self.meter1.table.columnWidth(i) for i in range(self.meter1.table.columnCount())
-            ]
-            self.meter1.config[f"col_widths_{self.meter2.meter_id}"] = [
-                self.meter2.table.columnWidth(i) for i in range(self.meter2.table.columnCount())
-            ]
-
-            self.meter1.config[f"main_splitter_{self.meter1.meter_id}"] = (
-                self.meter1.main_splitter.saveState().toHex().data().decode()
-            )
-            self.meter1.config[f"mid_splitter_{self.meter1.meter_id}"] = (
-                self.meter1.mid_splitter.saveState().toHex().data().decode()
-            )
-            self.meter1.config[f"main_splitter_{self.meter2.meter_id}"] = (
-                self.meter2.main_splitter.saveState().toHex().data().decode()
-            )
-            self.meter1.config[f"mid_splitter_{self.meter2.meter_id}"] = (
-                self.meter2.mid_splitter.saveState().toHex().data().decode()
-            )
-
-            self.meter1.save_config()
+            self._remember_layout()
         except Exception:
-            pass
-
+            log.warning("Couldn't save the window layout", exc_info=True)
+        self.save_shared_config(now=True)
         event.accept()
 
 
@@ -4088,15 +4407,16 @@ def _self_test(app, window):
 
 
 def _log_to_file_if_needed():
-    """Send output to <data folder>/app.log when there is no console to show it.
+    """Send output to <data folder>/logs/<computer>/app.log when there is no console to show it.
 
     That is the case for pythonw.exe (Windows launcher and shortcut), the standalone build, and
     the macOS launcher/shortcut (which set APERA_LOG_TO_FILE=1). Keeps one older log (app.log.1).
     """
     if sys.stderr is not None and os.environ.get("APERA_LOG_TO_FILE") != "1":
         return None
-    path = os.path.join(DATA_DIR, "app.log")
+    path = os.path.join(LOG_DIR, "app.log")
     try:
+        os.makedirs(LOG_DIR, exist_ok=True)
         if os.path.exists(path) and os.path.getsize(path) > 5_000_000:
             os.replace(path, path + ".1")
         log = open(path, "a", encoding="utf-8", buffering=1)  # kept open for the life of the app
@@ -4112,8 +4432,9 @@ def _log_to_file_if_needed():
 def main(argv=None):
     argv = list(sys.argv if argv is None else argv)
     self_test = "--self-test" in argv
-    # Errors go to logs/apera_meter.log in the data folder (before stdout is redirected to app.log).
-    crash_log.setup("apera_meter", os.path.join(DATA_DIR, "logs"), __version__)
+    # Errors go to logs/<computer>/apera_meter.log in the data folder (before stdout is redirected
+    # to app.log there). One folder per computer, so two computers never write the same synced file.
+    crash_log.setup("apera_meter", LOG_DIR, __version__)
     _log_to_file_if_needed()
     app = create_app([a for a in argv if a != "--self-test"])
     # One copy at a time (two would fight over the meters' COM ports): opening the app again
