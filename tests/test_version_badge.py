@@ -58,8 +58,10 @@ def test_output_goes_to_app_log_without_a_console(monkeypatch):
     finally:
         log, sys.stdout, sys.stderr = sys.stdout, old_out, old_err
         log.close()
-    assert path == os.path.join(meter_app.DATA_DIR, "app.log")
-    text = open(path, encoding="utf-8").read()
+    # One folder per computer inside the shared data folder, next to the error log
+    assert path == os.path.join(meter_app.DATA_DIR, "logs", meter_app.COMPUTER, "app.log")
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
     assert f"Apera Meter GUI {meter_app.__version__} started" in text
     assert "hello from the test" in text
 

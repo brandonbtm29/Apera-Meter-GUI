@@ -1,10 +1,12 @@
 # --- Your private settings: NEVER commit these ---
 # config.json holds per-meter settings, including Discord webhook URLs.
 config.json
+config.json.*
 secrets.json
 global_rois.json
-# Per-machine pointer to the settings folder
+# Per-machine pointer to the settings folder, and this computer's COM ports and window layout
 settings_location.json
+local_state.json
 .env
 
 # --- Instrument data, exports and logs (they live in the data folder, not here) ---

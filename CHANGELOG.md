@@ -6,6 +6,93 @@ bump the first. The format is based on [Keep a Changelog](https://keepachangelog
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-05
+
+Data safety: fixes from the 4 Nov 2026 review. Nothing to do after updating, except clicking
+**Connect** once on each computer (see "Changed").
+
+### Fixed
+- **USB dropouts during a run**: when the meter's USB connection drops, the tab now closes the port,
+  shows **Connect** again and keeps trying to reconnect to the same port (after 2, 5, 10, 20, 30 s,
+  then every minute) until the meter is back or you click Connect/Disconnect. Before, the button still
+  said Disconnect, the port stayed open and readings just stopped until the app was restarted. With
+  Discord alerts on, you get a message when the connection drops and when it's back.
+- **Timestamps** come from the computer's clock, not the meter's. A meter whose clock was wrong (e.g.
+  after a battery change) gave wrong times, negative durations and serial rows out of step with camera
+  rows. The meter's own time is kept in a new **Meter Clock** column, and the event log warns when the
+  meter's clock is more than a minute off. **Auto-Sync Time on Connect** is now on for new setups.
+- **Auto-save failures are visible**: the status bar turns red, the reason goes to the event log, the
+  error log and (with alerts on) Discord. If the file is open in Excel, the data is saved as
+  `<name> (2).xlsx` and auto-save carries on there. (They used to go only to `~/autosave_error.log`.)
+- **One auto-save file per session**: auto-save and Quick Save overwrite the same file, named once
+  at the session's first save. With the default `<Meter ID>_<Date>_<Time>` template every auto-save
+  used to make a new copy (about 96 files for an 8 h run). Clear Data starts a new file.
+- **No more pinging COM4**: Meter 1 no longer defaults to COM4 and connects to it at start. A port is
+  kept only once the meter has answered on it, and it's remembered for this computer only. A port
+  that never answers like an Apera meter is let go after 6 s (at most three pings). Auto-Detect only
+  tries USB serial ports (not Bluetooth or built-in ports), its timeout grows with the number of
+  ports, and a meter found after the timeout no longer connects anyway.
+- **Settings can't be lost to a half-written file**: `config.json` is written to a temporary file and
+  then swapped in, the previous version is kept as `config.json.bak`, and it's only written when
+  something changed (typing used to rewrite it on every key). If it can't be read, the last good copy
+  is used, the unreadable file is kept as `config.json.unreadable`, and the app says so (it used to
+  start from the defaults without a word).
+- Readings in other meter modes (pH, mV, TDS…) are no longer logged as conductivity; the event log says
+  which mode the meter is in. A reading in an unknown unit is skipped with a message.
+- µS/cm readings keep all their digits in the mS/cm column and the graph (12.3 µS/cm was 0.012 mS/cm).
+- **Download Raw Memory** works: it saves the readings stored in the meter to
+  `Meter<N>_Memory_<date>.xlsx` in the save folder (whether or not recording is on) and the button
+  comes back when it's done. It used to stay greyed out with "Downloading Memory…".
+- The graph stays responsive on long runs: a redraw takes about 0.2 s at any length (it was 0.5–1.5 s
+  at 3–11 h and growing). Long runs are thinned for drawing, keeping each stretch's highest and lowest
+  point. With **Auto Time** off, only the Time Window is drawn instead of everything.
+- **d(log C)/dt** is per minute (it was per reading, so it changed with the sampling rate).
+- Auto-save and auto-stop run on their own timer, so they also work when readings stop.
+- **Excel export** is always in time order (not the table's sort order), DateTime is a real Excel
+  date-time, and camera readings the OCR couldn't read are blank cells instead of 0.0, so they don't
+  break the chart's log axis or averages.
+- **Recover Session** restores temperatures (it read the OCR column, giving 0 °C).
+- Resuming after **Pause Recording** keeps the session's start, so durations carry on.
+- **Settings tab** changes are saved as you make them (there was a Save All Settings button, and
+  changes were lost without it).
+- The **Missing Data Streams** warning only lists streams in use: a recording meter without its
+  connection, a connected meter that isn't recording, and the camera when a reading area is drawn for
+  a recording meter. An unplugged, unused Meter 2 and an unused camera are no longer listed every time.
+- The calibration-burst button now updates when a burst starts.
+
+### Added
+- **Save and Close**: closing with unsaved readings offers Save and Close, Close Without Saving or
+  Cancel (it was a Yes/No question). **Clear Data** asks first when readings aren't saved.
+- **No-reading warning** (Settings → Meter N): while recording, the status bar, event log and Discord
+  say when no reading has arrived for 60 s (adjustable, 0 = off), and again when readings are back.
+  "Also alert when the connection drops, readings stop or a save fails" turns those Discord messages
+  off.
+- **Download the meter's memory every N hours** (Settings → Meter N, off by default); skipped when the
+  memory hasn't changed.
+- Copy Diagnostics shows each meter's reconnect state, number of readings and its auto-save and
+  backup file names.
+
+### Changed
+- **Ports are remembered per computer**, in `local_state.json` next to the app (not synced). After
+  updating, click **Connect** once on each computer; from then on the app connects at start by
+  itself. A port saved by an older version is only preselected.
+- **Backups**: one file per recording session and computer, in
+  `Data Backups/<computer>/Meter<N>_<start>.csv`, instead of one ever-growing file per meter that two
+  computers could write at once. Recover Session lists this computer's sessions, other computers'
+  (marked "from <computer>") and the old `Apera_Meter<N>_Backup.csv`.
+- **Logs per computer**: `logs/<computer>/apera_meter.log` and `logs/<computer>/app.log` in the data
+  folder, so the lab PC and the Mac no longer write the same synced file. Serial and packet errors now
+  go to the error log (and Copy Diagnostics) instead of only `app.log`. The old `logs/apera_meter.log`
+  and `app.log` can be deleted.
+- The window size and dividers are remembered per computer (`local_state.json`) instead of in the
+  shared `config.json`.
+- The serial protocol, the files the app writes and the graph's maths moved out of `meter_app.py` into
+  `meter_protocol.py`, `recording.py` and `plot_math.py`, with tests (packet decoding, backups and
+  recovery, auto-save, export, reconnecting).
+
+### Removed
+- `Scripts/preview.py` and `Scripts/test.py` (old manual probes).
+
 ## [1.4.2] - 2026-10-29
 
 ### Fixed

@@ -21,18 +21,21 @@ are needed every few seconds for hours and nobody should have to copy numbers of
 
 - **Two meters side by side**: each meter gets its own tab, connection, graph, table and save
   settings.
-- **Auto-connect**: scans the COM ports for an Apera meter and remembers the last port that
-  worked.
+- **Auto-connect**: finds an Apera meter on the USB serial ports and remembers its port on each
+  computer. If the USB connection drops during a run, the tab reconnects by itself.
 - **Live graphs**: conductivity (log scale, µS/cm or mS/cm), its rate of change, and temperature,
   against clock time or elapsed minutes.
 - **Meter memory download**: pull the readings stored in the meter, by hand or every few hours.
 - **Excel export**: one click saves the table, notes and a chart to `.xlsx`. File names are built
   from tokens such as `<Meter ID>_<Date>_<Time>` plus your own (material, flow rate, run #…).
-- **Auto-save and auto-stop**: save every few minutes while recording, and stop after a set time.
+- **Auto-save and auto-stop**: save every few minutes while recording (overwriting one file per
+  session), and stop after a set time. A failed save shows in red and, if the file is open in
+  Excel, goes to `<name> (2).xlsx` instead.
 - **Crash recovery**: every reading is also written to a backup CSV, and **Recover Session**
-  brings it back after a crash or power cut.
+  brings it back after a crash or power cut. Closing with unsaved readings offers **Save and Close**.
 - **Discord alerts** (optional): a message when conductivity changes sharply (by a set amount on
-  a log scale), with a delay after the start and a cool-down between alerts.
+  a log scale), with a delay after the start and a cool-down between alerts; and when the
+  connection drops, readings stop for a minute or a save fails.
 - **Camera reading (OCR)** (optional): point a webcam at the meter, draw a box around the
   display, and the app reads the digits with a trained model. A curation tab helps collect and
   label images for retraining.
@@ -100,7 +103,7 @@ The app opens without a meter attached, so you can look around first. Plug a met
 | **Meter 1 / Meter 2** tabs | **Connect**, **Start Recording**, **Save Log to Excel**, **Quick Save** (overwrite the auto-save file), **Download Raw Memory**, **Sync Meter Time**, **Recover Session**, **Clear Data** |
 | Right panel | Connection, metadata tokens for file names, save/auto-save/auto-stop, experiment notes |
 | Left panel | Axis limits, graph units, time vs. duration axis, event log |
-| **Settings** tab | Save folder and file-name template for both meters, Discord alerts, settings folder, version, **Create Desktop Shortcut**, **Check for Updates** (and whether to check when the app starts), **Open Log Folder** and **Copy Diagnostics** |
+| **Settings** tab | Save folder and file-name template for both meters, Discord alerts, the no-reading warning, memory auto-download, settings folder, version, **Create Desktop Shortcut**, **Check for Updates** (and whether to check when the app starts), **Open Log Folder** and **Copy Diagnostics**. Changes are saved as you make them. |
 | **Live OCR Feed** tab | Camera on/off, draw the reading area, OCR filters and logging |
 | **Dataset Curation** tab | Review and label camera crops for retraining the OCR model |
 
@@ -116,10 +119,14 @@ The app keeps **data** and **settings** in separate places.
 
 ```
 <data folder>/
-├── Data/            Excel exports (the default save folder)
-├── Data Backups/    crash-recovery CSVs, one per meter
-└── Sessions/        OCR captures and the training dataset
+├── Data/                       Excel exports and memory downloads (the default save folder)
+├── Data Backups/<computer>/    crash-recovery CSVs, one per recording session
+├── logs/<computer>/            error log (apera_meter.log) and app.log
+└── Sessions/                   OCR captures and the training dataset
 ```
+
+Each computer writes its own backups and logs, so two computers sharing the folder through
+SyncThing never write the same file.
 
 To use another folder, set an environment variable before starting the app:
 
@@ -135,8 +142,14 @@ areas) live next to the code (or next to the `.exe`) by default and are never co
 so `Settings` keeps them identical across computers.
 
 All settings are edited in the app, which writes `config.json` itself; there's no need to edit
-it by hand. Treat it as private: it holds your **Discord webhook URLs**, and anyone with a
-webhook URL can post to that channel.
+it by hand. It's written safely (a crash can't leave half a file) and the previous version is kept
+as `config.json.bak`; if the file can't be read, the app uses the last good copy and says so.
+Treat it as private: it holds your **Discord webhook URLs**, and anyone with a webhook URL can
+post to that channel.
+
+Things that differ between computers, the meters' COM ports and the window layout, are kept in
+`local_state.json` next to the code (or the `.exe`), which is never synced or committed. A meter's
+port is remembered once the meter has answered on it; the app connects to it at start.
 
 ## Updating
 
@@ -155,10 +168,15 @@ when the app starts** in the same box.
 ## How it works
 
 - **Serial**: each meter tab owns a background thread that talks to the meter at 115200 baud,
-  decodes its packets into date, conductivity and temperature, and hands them to the UI. An
-  optional keep-alive ping (every 2 s, on by default) keeps the connection active.
-- **Recording**: each reading goes to the table, the graph and the backup CSV at the same time.
-  Excel files are written with pandas and openpyxl.
+  decodes its packets (`meter_protocol.py`) into conductivity and temperature, and hands them to
+  the UI. A port is only kept once it has answered like an Apera meter. An optional keep-alive
+  ping (every 2 s, on by default) keeps the connection active; if the port fails, the thread closes
+  it and the tab reconnects with a growing delay.
+- **Times**: each row's DateTime is the computer's clock when the reading arrived; the meter's
+  own clock is kept in the **Meter Clock** column (it can be far off, e.g. after a battery change).
+- **Recording**: each reading goes to the table, the graph and the backup CSV at the same time
+  (`recording.py`). Excel files are written with openpyxl in time order, with real date-times;
+  auto-saves are written in the background.
 - **OCR**: a camera thread grabs frames, crops the area you drew, and runs a CRNN (ResNet-34 +
   LSTM) from `ocr_model.py` with the weights in `meter_ocr_model.pt`. Filters reject impossible
   values before they're logged.
@@ -166,6 +184,9 @@ when the app starts** in the same box.
 | File | Contents |
 |---|---|
 | `meter_app.py` | The app: meter tabs, settings tab, OCR tab, main window |
+| `meter_protocol.py` | The meter's serial protocol: commands and packet decoding |
+| `recording.py` | Settings files, per-computer state, crash backups and Excel export |
+| `plot_math.py` | The graph's rate of change per minute and thinning of long runs |
 | `ocr_pipeline.py`, `ocr_model.py` | Camera capture, preprocessing and the OCR network |
 | `dataset_curation_tab.py` | The labelling tab |
 | `settings_location.py` | Where settings are stored (shared with the lab's other apps) |
@@ -176,10 +197,13 @@ when the app starts** in the same box.
 
 ## Good to know
 
-- **Error log**: errors, with tracebacks (also from background threads), go to `logs/apera_meter.log` in the data folder. An unexpected error is shown in a dialog and the app keeps running instead of closing. A hard crash (e.g. in a driver) leaves a `.fatal.log` next to it. **Settings → Open Log Folder** shows it.
+- **Error log**: errors, with tracebacks (also from background threads), go to `logs/<computer>/apera_meter.log` in the data folder. An unexpected error is shown in a dialog and the app keeps running instead of closing. A hard crash (e.g. in a driver) leaves a `.fatal.log` next to it. **Settings → Open Log Folder** shows it.
 - **Reporting a problem**: **Settings → Copy Diagnostics** copies the app version, its folders, the meter connections and the end of the error log. Paste it into a GitHub issue or an email. Home-folder names and anything that looks like a password or token are left out.
-- Only the **conductivity** and **temperature** readings are logged; other meter modes (pH,
-  TDS, salinity…) aren't handled.
+- Only the **conductivity** and **temperature** readings are logged; in other meter modes (pH,
+  TDS, salinity…) nothing is logged and the event log says which mode the meter is in.
+- **Download Raw Memory** saves the readings stored in the meter (with the meter's own clock) to
+  `Meter<N>_Memory_<date>.xlsx` in the save folder; it can also run every few hours (Settings →
+  Meter N).
 - If a log shows sudden 1000× jumps (readings mixing µS/cm and mS/cm),
   `python Scripts/cleanup_1000x_gaps.py <log.csv>` writes a repaired copy next to it.
 - The OCR model was trained on images from one lab setup (meter, camera and lighting). On a
@@ -193,8 +217,8 @@ when the app starts** in the same box.
   shortcut there is a small `Apera Meter GUI.app` with the meter icon that starts the app without
   a Terminal window.
 - When the app runs without a console (the launchers, the desktop shortcut, the standalone app),
-  its messages and any errors go to `app.log` in the data folder. Look there if something goes
-  wrong.
+  its messages and any errors go to `logs/<computer>/app.log` in the data folder. Look there if
+  something goes wrong.
 
 ## Development
 
