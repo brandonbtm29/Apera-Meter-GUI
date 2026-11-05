@@ -45,7 +45,7 @@ jobs:
           }
           Get-Content $env:APERA_SELF_TEST_REPORT
           if ($p.ExitCode -ne 0) { throw "Self-test failed with exit code $($p.ExitCode)" }
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-app
           path: dist/*.zip
