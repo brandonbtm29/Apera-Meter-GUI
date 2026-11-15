@@ -26,11 +26,17 @@ DATA_FOLDER_NAME = "Electrical Conductivity Meter"
 
 
 def default_data_dir(home=None):
-    """The lab's SyncThing folder when it exists on this computer, else Documents/Apera Meter Data."""
+    """The app's own SyncThing folder (~/SyncThing/Electrical Conductivity Meter) when it is on this
+    computer; else the old shared one (~/SyncThing/UAkron Playground/..., used before Nov 2026) if
+    this computer still has it; else Documents/Apera Meter Data."""
     home = home or os.path.expanduser("~")
-    synced_root = os.path.join(home, "SyncThing", "UAkron Playground")
-    if os.path.isdir(synced_root):
-        return os.path.join(synced_root, DATA_FOLDER_NAME)
+    sync = os.path.join(home, "SyncThing")
+    for folder in (
+        os.path.join(sync, DATA_FOLDER_NAME),
+        os.path.join(sync, "UAkron Playground", DATA_FOLDER_NAME),
+    ):
+        if os.path.isdir(folder):
+            return folder
     return os.path.join(home, "Documents", "Apera Meter Data")
 
 

@@ -113,8 +113,9 @@ The app keeps **data** and **settings** in separate places.
 
 **Data** (Excel exports, backups, logs, OCR sessions) goes in a data folder:
 
-- `~/SyncThing/UAkron Playground/Electrical Conductivity Meter/` if that SyncThing folder exists
-  (the lab's computers), otherwise
+- `~/SyncThing/Electrical Conductivity Meter/`, the app's own SyncThing folder, if it exists (the
+  lab's computers; one that still has only the old `~/SyncThing/Electrical
+  Conductivity Meter/` keeps using that), otherwise
 - `~/Documents/Apera Meter Data/`.
 
 ```
