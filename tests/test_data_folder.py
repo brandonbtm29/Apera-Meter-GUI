@@ -5,10 +5,17 @@ import os
 import meter_app
 
 
-def test_uses_syncthing_folder_when_it_exists(tmp_path):
-    (tmp_path / "SyncThing" / "UAkron Playground").mkdir(parents=True)
-    expected = tmp_path / "SyncThing" / "UAkron Playground" / "Electrical Conductivity Meter"
-    assert meter_app.resolve_data_dir({}, str(tmp_path)) == str(expected)
+def test_uses_its_own_syncthing_folder(tmp_path):
+    new = tmp_path / "SyncThing" / "Electrical Conductivity Meter"
+    new.mkdir(parents=True)
+    (tmp_path / "SyncThing" / "UAkron Playground" / "Electrical Conductivity Meter").mkdir(parents=True)
+    assert meter_app.resolve_data_dir({}, str(tmp_path)) == str(new)
+
+
+def test_keeps_the_old_shared_folder_until_the_new_one_arrives(tmp_path):
+    old = tmp_path / "SyncThing" / "UAkron Playground" / "Electrical Conductivity Meter"
+    old.mkdir(parents=True)
+    assert meter_app.resolve_data_dir({}, str(tmp_path)) == str(old)
 
 
 def test_falls_back_to_documents_without_syncthing(tmp_path):

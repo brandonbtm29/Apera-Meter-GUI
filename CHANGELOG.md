@@ -6,6 +6,12 @@ bump the first. The format is based on [Keep a Changelog](https://keepachangelog
 
 ## [Unreleased]
 
+### Changed
+- The data folder is now the app's own SyncThing folder, `~/SyncThing/Electrical Conductivity Meter`, instead of
+  `Electrical Conductivity Meter` inside the shared `~/SyncThing/UAkron Playground` folder (retired in November 2026).
+  A computer that has only the old folder keeps using it until SyncThing brings the new one.
+  `UAKRON_DATA_DIR` (the folder that holds the app's data folder) now defaults to `~/SyncThing`.
+
 ## [1.5.0] - 2026-11-05
 
 Data safety: fixes from the 4 Nov 2026 review. Nothing to do after updating, except clicking
