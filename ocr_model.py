@@ -33,10 +33,13 @@ class MeterCRNN(nn.Module):
     def __init__(self, freeze_backbone=True):
         super().__init__()
 
-        # Winning Architecture: ResNet-34, Heavy Downsampling, 0.3 Dropout (Phase 3 Champion)
+        # Deployed weights (meter_ocr_model.pt) are the v1 Phase 2 checkpoint Phase2_R34_Ep75_Unf0_Drop10
+        # (same SHA-1): ResNet-34, all four stages, BiLSTM, trained with dropout 0.1 and the backbone
+        # unfrozen from the start. Dropout values here only matter for training. See LCD-Digit-CRNN
+        # docs/METHODOLOGY_V2.md for the redesign (v1 was selected on training-set crops).
         resnet = models.resnet34(weights=None)
 
-        # Heavy Downsampling
+        # Full-depth backbone (legacy name "heavy downsampling"): 64x256 -> 512x2x8 map, 8 CTC steps
         self.backbone = nn.Sequential(*list(resnet.children())[:-2])
 
         if freeze_backbone:
