@@ -17,6 +17,8 @@ os.environ["UAKRON_SETTINGS_DIR"] = str(_tmp / "settings")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("MPLBACKEND", "QtAgg")
 os.environ["APERA_NO_BACKGROUND_CHECKS"] = "1"  # no network calls or desktop changes from tests
+# Never open a real webcam: on a computer with one, its OCR readings would land in the tests' tables.
+os.environ["APERA_NO_CAMERA_AUTOSTART"] = "1"
 
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
