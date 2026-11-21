@@ -2,6 +2,7 @@
 
 import csv
 import glob
+import io
 import os
 import struct
 import time
@@ -19,15 +20,19 @@ def _ds_packet(dp, dot, second, unit_b=1):
 
 
 def _wait_for_rows(path, n, timeout=5.0):
+    # Capture threads append rows while this reads the file, so wait for whole rows: a line that is
+    # still being written ends without a newline or is missing columns (None in DictReader).
     end = time.time() + timeout
     while time.time() < end:
         if os.path.exists(path):
             with open(path, encoding="utf-8") as f:
-                rows = list(csv.DictReader(f))
-            if len(rows) >= n:
-                return rows
+                text = f.read()
+            if text.endswith("\n"):
+                rows = list(csv.DictReader(io.StringIO(text)))
+                if len(rows) >= n and all(None not in r.values() for r in rows):
+                    return rows
         time.sleep(0.05)
-    raise AssertionError(f"readings.csv did not reach {n} rows")
+    raise AssertionError(f"readings.csv did not reach {n} complete rows")
 
 
 def test_header_keeps_the_original_columns_first():
