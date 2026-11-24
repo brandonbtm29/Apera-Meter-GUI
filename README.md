@@ -17,6 +17,10 @@ stream isn't enough.
 It was built for long column sorption experiments in a university polymer lab, where readings
 are needed every few seconds for hours and nobody should have to copy numbers off a display.
 
+> **Not affiliated with Apera Instruments.** This is an independent project, not made, endorsed or
+> supported by Apera Instruments, LLC. "Apera" and the meter model names are used only to say which
+> meters it works with.
+
 ## Features
 
 - **Two meters side by side**: each meter gets its own tab, connection, graph, table and save
@@ -249,6 +253,17 @@ gh release create vX.Y.Z --title "Apera Meter GUI X.Y.Z" --notes-file notes.md -
 
 Publishing the release starts the **Release build** workflow, which builds the Windows app, runs
 its self-test and attaches the zip to the release (about 15 minutes).
+
+## About the meter protocol
+
+Apera's own PC-Link software, a Windows program written in Visual Basic, is the usual way to read
+these meters on a computer. The packet format this app uses was worked out by examining how PC-Link
+reads the meter's data, then reimplemented in Python (`meter_protocol.py`) so the app can talk to the
+meters. This repository contains no PC-Link code or files; PC-Link and its USB driver come from Apera.
+
+The app only sends the meter's normal USB serial commands (check the connection, download the stored
+readings, set the meter's clock). It doesn't modify, replace or get around the meter's firmware, and
+it doesn't change how the meter measures.
 
 ## How this was built
 

@@ -29,6 +29,8 @@ bump the first. The format is based on [Keep a Changelog](https://keepachangelog
   `Electrical Conductivity Meter` inside the shared `~/SyncThing/UAkron Playground` folder (retired in November 2026).
   A computer that has only the old folder keeps using it until SyncThing brings the new one.
   `UAKRON_DATA_DIR` (the folder that holds the app's data folder) now defaults to `~/SyncThing`.
+- README: says the app is independent of Apera Instruments and explains how the meter protocol was
+  implemented (reimplemented in Python, no PC-Link code included, the meter's firmware never modified).
 
 ## [1.5.0] - 2026-11-05
 
