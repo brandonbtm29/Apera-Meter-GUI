@@ -16,6 +16,11 @@ soon as I can manage; this is a one-person lab project, so please allow a few da
   stored in plain text in `config.json`, which is gitignored; don't commit it or share it. If a
   webhook URL leaks, delete the webhook in Discord and create a new one.
 - Readings and exports stay in your data folder (see the README). Nothing is uploaded.
+- **Updates** come only from this repository's published releases, and only if the release's
+  commit is signed with a key in `.github/allowed_signers` (checked against the copy this computer
+  already has, so a release can't add its own key). The app fast-forwards its git folder to the
+  release, runs git without any `GIT_*` settings from the environment, and refuses if any of its
+  files were edited by hand.
 
 ## Checks
 

@@ -166,7 +166,10 @@ when the app starts** in the same box.
 - **Running from source (a git clone):** **Update and Restart** moves the clone to the new release,
   reinstalls its Python packages and restarts the app. If you've edited the app's files or made
   your own commits, it stops and explains instead of overwriting them. Your data and settings are
-  never touched.
+  never touched. Only signed releases are installed: the release's commit must be signed with one
+  of the keys in `.github/allowed_signers`, checked against the copy this computer already has (so
+  a new release can't add its own key). If it isn't, the update window says why and the app stays
+  on the version it has.
 - **Standalone app:** it opens the release page; download the new zip and replace the old folder
   (copy your `config.json` across if you keep settings next to the `.exe`).
 
@@ -196,7 +199,7 @@ when the app starts** in the same box.
 | `dataset_curation_tab.py` | The labelling tab |
 | `settings_location.py` | Where settings are stored (shared with the lab's other apps) |
 | `crash_log.py`, `single_instance.py`, `diagnostics.py` | Error log, one-copy-at-a-time lock, and the Open Log Folder / Copy Diagnostics helpers (shared with the lab's other apps) |
-| `updater.py` | Checks GitHub for a newer release and updates a git clone |
+| `updater.py` | Checks GitHub for a newer release and updates a git clone (signed releases only) |
 | `shortcuts.py` | Creates the desktop shortcut (Windows `.lnk`, macOS `.app`, Linux `.desktop`) |
 | `Scripts/` | Build script, log repair (`cleanup_1000x_gaps.py`), screenshot generator |
 
@@ -243,7 +246,10 @@ for secrets. The version lives in one place, `__version__` in `meter_app.py`; ch
 in [CHANGELOG.md](CHANGELOG.md). Security reports: see [SECURITY.md](SECURITY.md).
 
 **Cutting a release:** bump `__version__`, move the "Unreleased" notes in the changelog under the
-new version and date, commit, then:
+new version and date, commit, then tag that commit. Make the commit on your own computer, signed
+with a key in `.github/allowed_signers`: the Update button refuses a release whose commit isn't,
+and a commit made with GitHub's merge button is signed with GitHub's key, not yours. To trust
+another computer's key, add it to that file in a commit signed with a key that's already listed.
 
 ```bash
 git tag -a vX.Y.Z -m "Apera Meter GUI X.Y.Z"

@@ -15,3 +15,6 @@
 
 # The deployed OCR model is stored with Git LFS (run "git lfs install" before cloning).
 meter_ocr_model.pt filter=lfs diff=lfs merge=lfs -text
+
+# Signing keys the updater trusts: keep LF so ssh-keygen reads them the same everywhere.
+.github/allowed_signers text eol=lf

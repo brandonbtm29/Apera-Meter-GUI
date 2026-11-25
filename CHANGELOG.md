@@ -6,6 +6,14 @@ bump the first. The format is based on [Keep a Changelog](https://keepachangelog
 
 ## [Unreleased]
 
+### Security
+- **Updates install only signed releases.** The release's commit must be signed with one of the keys
+  in `.github/allowed_signers`, checked against the copy this computer already has, so a new release
+  can't add its own key. If it isn't, the update window says why (unsigned, signed by a key that isn't
+  listed, or can't be checked) and the app stays on the version it has. The check starts with the
+  release after this one is installed. git and pip now run without any `GIT_*` settings from the
+  environment.
+
 ### Added
 - **Auto-Record OCR Training Dataset** now records what the meter itself reported for every saved crop:
   `readings.csv` gains the displayed digits, the unit (µS/cm or mS/cm), the meter's own clock time, the
