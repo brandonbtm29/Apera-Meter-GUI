@@ -195,6 +195,24 @@ def test_no_list_or_no_ssh_keygen_means_no_update(tmp_path, monkeypatch):
     assert "ssh-keygen isn't installed" in updater.release_signed(str(tmp_path), "abc123")
 
 
+def test_ssh_keygen_prefers_gits_own_copy_on_windows(tmp_path, monkeypatch):
+    # System32's ssh-keygen can hang on `-Y verify` in an SSH session; Git's own copy doesn't
+    git = tmp_path / "Git" / "cmd" / "git.exe"
+    gits = tmp_path / "Git" / "usr" / "bin" / "ssh-keygen.exe"
+    on_path = tmp_path / "OpenSSH" / "ssh-keygen.exe"
+    for f in (git, gits, on_path):
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("")
+    found = {"git": str(git), "ssh-keygen": str(on_path)}
+    monkeypatch.setattr(updater.shutil, "which", lambda name: found.get(name))
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "nowhere"))
+    monkeypatch.setenv("SystemRoot", str(tmp_path / "nowhere"))
+    assert os.path.realpath(updater._ssh_keygen(windows=True)) == os.path.realpath(gits)
+    gits.unlink()
+    assert updater._ssh_keygen(windows=True) == str(on_path)
+    assert updater._ssh_keygen(windows=False) == str(on_path)
+
+
 def test_update_refuses_a_release_that_is_not_signed(clone, monkeypatch):
     origin, work = clone
     release(origin, "v1.1.0", 2)

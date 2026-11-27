@@ -12,7 +12,8 @@ bump the first. The format is based on [Keep a Changelog](https://keepachangelog
   can't add its own key. If it isn't, the update window says why (unsigned, signed by a key that isn't
   listed, or can't be checked) and the app stays on the version it has. The check starts with the
   release after this one is installed. git and pip now run without any `GIT_*` settings from the
-  environment.
+  environment. On Windows the check uses Git's own `ssh-keygen` first: the one in System32 can hang
+  when the app runs in an SSH session.
 
 ### Added
 - **Auto-Record OCR Training Dataset** now records what the meter itself reported for every saved crop:
